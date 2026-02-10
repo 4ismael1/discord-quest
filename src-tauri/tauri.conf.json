@@ -1,0 +1,63 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DiscordQuest",
+  "version": "1.0.0",
+  "identifier": "com.discordquest.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "DiscordQuest",
+        "width": 960,
+        "height": 680,
+        "minWidth": 800,
+        "minHeight": 600,
+        "decorations": false,
+        "transparent": true,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      },
+      "csp": {
+        "default-src": "'self' customprotocol: asset:",
+        "connect-src": "ipc: http://ipc.localhost", 
+        "img-src": "'self' asset: http://asset.localhost blob: data:",
+        "style-src": "'unsafe-inline' 'self'"
+      }
+    }
+  }, 
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "resources/src-win.exe": "data/src-win.exe"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "Spanish"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}
