@@ -61,6 +61,7 @@ async fn run_background_process(
     executable_name: &str,
     path_len: i64,
     app_id: String,
+    rpc_mode: Option<bool>,
 ) -> Result<String, String> {
     let _ = path_len;
     let exe_path = env::current_exe().unwrap_or_default();
@@ -74,8 +75,13 @@ async fn run_background_process(
         .join(normalized_path);
     let executable_path = game_folder_path.join(executable_name);
 
-    let args = vec!["--title".to_string(), name.to_string()];
-    // Always show window visible (no --tray flag)
+    let mut args = vec!["--title".to_string(), name.to_string()];
+    // RPC mode: also connect via Discord IPC so the game shows up in user status.
+    // Used as fallback for games without registered Windows executables.
+    if rpc_mode.unwrap_or(false) {
+        args.push("--app-id".to_string());
+        args.push(app_id.clone());
+    }
 
     match std::process::Command::new(&executable_path)
         .args(&args)

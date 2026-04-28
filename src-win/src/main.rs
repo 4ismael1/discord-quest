@@ -27,6 +27,7 @@ use std::sync::OnceLock;
 use std::time::SystemTime;
 
 mod tray;
+mod discord_ipc;
 use tray::create_tray_icon;
 
 const WIDTH: i32 = 380;
@@ -35,16 +36,19 @@ const TIMER_ID: usize = 1;
 
 static START_TIME: AtomicU64 = AtomicU64::new(0);
 static GAME_TITLE: OnceLock<String> = OnceLock::new();
+static RPC_MODE: OnceLock<bool> = OnceLock::new();
 
-#[derive(Debug)]
-struct Config {
-    title: String,
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub title: String,
+    pub app_id: Option<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
             title: "DiscordQuest".to_string(),
+            app_id: None,
         }
     }
 }
@@ -59,6 +63,14 @@ fn parse_args() -> Config {
             "--title" => {
                 if i + 1 < args.len() {
                     config.title = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--app-id" => {
+                if i + 1 < args.len() {
+                    config.app_id = Some(args[i + 1].clone());
                     i += 2;
                 } else {
                     i += 1;
@@ -200,7 +212,13 @@ fn paint_window(hwnd: HWND) {
             COLORREF(0x002A262A),
         );
         draw_text_at(hdc, "TIPO", card2_x + 10, card_y + 8, half_w - 20, 14, COLORREF(0x007A647A), font_label, dt_left);
-        draw_text_at(hdc, "Quest Runner", card2_x + 10, card_y + 26, half_w - 20, 16, COLORREF(0x00B0A0B0), font_value, dt_left);
+        let tipo_text = if RPC_MODE.get().copied().unwrap_or(false) { "RPC (Solo estado)" } else { "Quest Runner" };
+        let tipo_color = if RPC_MODE.get().copied().unwrap_or(false) {
+            COLORREF(0x000FB5F2) // amber/yellow #F2B50F BGR
+        } else {
+            COLORREF(0x00B0A0B0)
+        };
+        draw_text_at(hdc, tipo_text, card2_x + 10, card_y + 26, half_w - 20, 16, tipo_color, font_value, dt_left);
 
         // ── Timer section ──
         let timer_y = card_y + card_h + 16;
@@ -319,7 +337,17 @@ fn main() {
 
     // Store title globally for paint
     GAME_TITLE.set(config.title.clone()).ok();
-    
+
+    // RPC mode: if --app-id is provided, connect to Discord IPC in a background thread.
+    // This sets Rich Presence (visible status) but does NOT trigger quest progress.
+    let is_rpc = config.app_id.is_some();
+    RPC_MODE.set(is_rpc).ok();
+    if let Some(app_id) = config.app_id.clone() {
+        std::thread::spawn(move || {
+            discord_ipc::connect_and_set_presence(&app_id);
+        });
+    }
+
     let tray_menu = tray_icon::menu::Menu::new();
     let quit_i = tray_icon::menu::MenuItem::new("Cerrar", true, None);
     let show_i = tray_icon::menu::MenuItem::new("Mostrar", true, None);

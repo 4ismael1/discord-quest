@@ -231,6 +231,79 @@ function stopPlaying({ game, executable }: { game: Game; executable: GameExecuta
   }
 }
 
+// ── RPC-only mode (for games without compatible Win32 executables) ──
+// Discord's quest detector only checks running processes against registered
+// executables. Games without those can only be shown via Rich Presence (IPC).
+// This will display the game in the user's Discord status but does NOT count
+// toward quest completion.
+const RPC_EXE_NAME = 'DiscordQuest.exe';
+const RPC_EXE_PATH = 'rpc';
+
+async function playViaRpc(game: Game) {
+  if (isBusy.value) return;
+  isBusy.value = true;
+  try {
+    const gameInList = gameList.value.find(g => g.uid === game.uid);
+    if (!gameInList) return;
+
+    // Stop any other running game first
+    if (currentlyPlaying.value && currentlyPlaying.value !== gameInList.id) {
+      const runningGame = gameList.value.find(g => g.id === currentlyPlaying.value);
+      if (runningGame) {
+        const runningExe = runningGame.executables.find(e => e.is_running);
+        runningGame.is_running = false;
+        runningGame.executables.forEach(e => e.is_running = false);
+        const exeNameToStop = runningExe?.filename
+          || runningExe?.name.split(/\\|\//).pop()
+          || RPC_EXE_NAME;
+        invoke('stop_process', { exec_name: exeNameToStop, app_id: runningGame.id }).catch(() => {});
+        addLog('info', `Detenido: ${runningGame.name}`);
+      }
+      currentlyPlaying.value = null;
+    }
+
+    // Create the fake exe (generic path since the name doesn't matter for RPC)
+    await invoke('create_fake_game', {
+      path: RPC_EXE_PATH,
+      executable_name: RPC_EXE_NAME,
+      path_len: 2,
+      app_id: gameInList.id,
+    });
+
+    addLog('info', `Iniciando RPC: ${game.name}`);
+    currentlyPlaying.value = gameInList.id;
+    gameInList.is_running = true;
+
+    invoke('run_background_process', {
+      name: game.name,
+      path: RPC_EXE_PATH,
+      executable_name: RPC_EXE_NAME,
+      path_len: 2,
+      app_id: gameInList.id,
+      rpc_mode: true,
+    }).catch((error) => {
+      addLog('error', `Error al iniciar RPC: ${error}`);
+      gameInList.is_running = false;
+      currentlyPlaying.value = null;
+    });
+  } catch (error) {
+    addLog('error', `Error RPC: ${error}`);
+  } finally {
+    isBusy.value = false;
+  }
+}
+
+function stopRpc(game: Game) {
+  const gameInList = gameList.value.find(g => g.uid === game.uid);
+  if (!gameInList) return;
+  gameInList.is_running = false;
+  if (currentlyPlaying.value === gameInList.id) {
+    currentlyPlaying.value = null;
+  }
+  addLog('info', `Detenido RPC: ${game.name}`);
+  invoke('stop_process', { exec_name: RPC_EXE_NAME, app_id: gameInList.id }).catch(() => {});
+}
+
 async function installAndPlay({ game, executable }: { game: Game; executable: GameExecutable }) {
   if (isBusy.value) return;
   isBusy.value = true;
@@ -293,7 +366,7 @@ provide<GameActionsProvider>(GameActionsKey, {
         :is-loading="isLoading"
         :added-ids="gameList.map(g => g.id)"
         @select="addGameToList"
-        @refetch="fetchGameList()"
+        @refetch="fetchGameList(true)"
       />
     </div>
 
@@ -343,6 +416,8 @@ provide<GameActionsProvider>(GameActionsKey, {
         @play="playGame"
         @stop="stopPlaying"
         @install-and-play="installAndPlay"
+        @play-rpc="playViaRpc"
+        @stop-rpc="stopRpc"
       />
     </div>
 

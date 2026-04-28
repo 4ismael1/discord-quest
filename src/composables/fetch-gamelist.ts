@@ -1,11 +1,11 @@
 import { Game } from '@/types/types';
 import { fetch } from '@tauri-apps/plugin-http';
-import { tryOnMounted, useAsyncState } from '@vueuse/core';
-import { ref, watch } from 'vue';
-import { message } from '@tauri-apps/plugin-dialog';
+import { tryOnMounted } from '@vueuse/core';
+import { ref } from 'vue';
 import { useGlobalState } from './app-state';
+import { idbGet, idbSet } from '@/utils/idb-cache';
 
-// ── Mirror API URLs ──
+// ── Mirror endpoints ──
 const MIRROR_URLS = {
     primary: 'https://4ismael1.github.io/discord-detectable-mirror/detectable.json',
     fallback: 'https://cdn.jsdelivr.net/gh/4ismael1/discord-detectable-mirror@main/docs/detectable.json',
@@ -16,6 +16,10 @@ const META_URLS = {
     fallback: 'https://cdn.jsdelivr.net/gh/4ismael1/discord-detectable-mirror@main/docs/meta.json',
 };
 
+// ── Cache keys (IndexedDB) ──
+const CACHE_DB_KEY = 'gamedb_v2';
+const CACHE_META_KEY = 'gamedb_meta_v2';
+
 export interface MirrorMeta {
     last_updated: string;
     etag: string | null;
@@ -25,160 +29,152 @@ export interface MirrorMeta {
     items_count?: number;
 }
 
+interface CachedMeta {
+    sha256: string;
+    fetched_at: number;
+}
+
+function isValidGameList(data: any): boolean {
+    return Array.isArray(data) && data[0] && 'aliases' in data[0] && 'name' in data[0] && 'executables' in data[0];
+}
+
 export function useFetchGameList() {
     const { addLog } = useGlobalState();
     const mirrorMeta = ref<MirrorMeta | null>(null);
+    const fetchError = ref<string | null>(null);
+    const gameDB = ref<Game[]>([]);
+    const allFetchDone = ref(false);
+    const isLoadingDiscord = ref(false);
+    const isLoadingBundled = ref(false);
+    const isReadyDiscord = ref(false);
+    const isReadyBundled = ref(false);
 
-    async function fetchFromUrl(url: string): Promise<any> {
+    async function fetchJson<T>(url: string): Promise<T> {
         const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json();
+        return (await response.json()) as T;
     }
 
     async function fetchMirrorMeta(): Promise<MirrorMeta | null> {
         try {
-            addLog('debug', 'Obteniendo metadatos del espejo...');
-            const data = await fetchFromUrl(META_URLS.primary);
-            return data as MirrorMeta;
+            return await fetchJson<MirrorMeta>(META_URLS.primary);
         } catch {
-            addLog('debug', 'Fallback: metadatos desde CDN...');
             try {
-                const data = await fetchFromUrl(META_URLS.fallback);
-                return data as MirrorMeta;
+                return await fetchJson<MirrorMeta>(META_URLS.fallback);
             } catch {
-                addLog('warning', 'No se pudieron obtener metadatos del espejo');
                 return null;
             }
         }
     }
 
-    async function fetchGameListFromMirror(): Promise<Game[] | unknown[]> {
-        addLog('info', 'Obteniendo lista de juegos desde espejo...');
-
-        // Fetch meta in parallel
-        fetchMirrorMeta().then(meta => {
-            if (meta) {
-                mirrorMeta.value = meta;
-                addLog('debug', `Espejo: ${meta.status} | Actualizado: ${meta.last_updated}`);
-            }
-        });
-
-        // Try primary mirror
+    async function fetchFullGameList(): Promise<Game[] | null> {
         try {
-            const data = await fetchFromUrl(MIRROR_URLS.primary);
-            return data;
+            return await fetchJson<any>(MIRROR_URLS.primary);
         } catch {
             addLog('warning', 'Espejo principal no disponible, usando fallback CDN...');
+            try {
+                return await fetchJson<any>(MIRROR_URLS.fallback);
+            } catch (e) {
+                addLog('error', 'Fallback CDN tampoco disponible');
+                throw e;
+            }
         }
+    }
 
-        // Try CDN fallback
+    async function loadBundled(): Promise<Game[]> {
+        isLoadingBundled.value = true;
         try {
-            const data = await fetchFromUrl(MIRROR_URLS.fallback);
-            return data;
-        } catch (e) {
-            addLog('error', 'Fallback CDN tampoco disponible');
-            throw e;
+            const result = (await import('../assets/gamelist.json')).default as Game[];
+            isReadyBundled.value = true;
+            return result;
+        } finally {
+            isLoadingBundled.value = false;
         }
     }
 
-    const {
-        state: gameListFromMirror,
-        error: errorMirror,
-        isReady: isReadyDiscord,
-        execute: executeMirror,
-        isLoading: isLoadingDiscord
-    } = useAsyncState(fetchGameListFromMirror, [], {
-        immediate: false,
-        resetOnExecute: true,
-    });
-
-    const {
-        state: bundledGameList,
-        error: errorBundled,
-        isReady: isReadyBundled,
-        execute: executeBundled,
-        isLoading: isLoadingBundled
-    } = useAsyncState(() => {
-        const result = import('../assets/gamelist.json').then(res => res.default);
-        addLog('info', 'Cargando lista de juegos local...');
-        return result;
-    }, [], {
-        immediate: false,
-        resetOnExecute: true,
-    });
-
-    const fetchError = ref<string | null>(null);
-    const gameDB = ref<Game[]>([]);
-    const allFetchDone = ref(false);
-
-    function isValidGameList(data: any): boolean {
-        return Array.isArray(data) && data[0] && 'aliases' in data[0] && 'name' in data[0] && 'executables' in data[0];
-    }
-
-    watch(() => isReadyDiscord.value, async (newVal) => {
-        addLog('debug', 'isReadyMirror: ' + newVal);
-    });
-
-    watch(() => isReadyBundled.value, async (newVal) => {
-        addLog('debug', 'isReadyBundled: ' + newVal);
-    });
-
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-
-    async function fetchGameList() {
+    /**
+     * Smart fetch flow:
+     *   1. Load cached gamelist from IndexedDB (if any) — instant first paint
+     *   2. Fetch meta.json from mirror to get current sha256
+     *   3. If sha256 matches cache → done (no network for the heavy file)
+     *   4. If sha256 differs (or no cache) → fetch full list, update cache
+     *   5. If everything fails → fall back to bundled list
+     */
+    async function fetchGameList(force = false) {
         allFetchDone.value = false;
         fetchError.value = null;
-        addLog('info', 'Obteniendo lista de juegos...');
+
+        // 1) Load cache immediately so the UI has data right away
+        const [cached, cachedMeta] = await Promise.all([
+            idbGet<Game[]>(CACHE_DB_KEY),
+            idbGet<CachedMeta>(CACHE_META_KEY),
+        ]);
+
+        if (!force && cached && isValidGameList(cached)) {
+            gameDB.value = cached;
+            isReadyDiscord.value = true;
+            addLog('info', `Cache cargado: ${cached.length} juegos`);
+        }
+
+        // 2) Fetch the meta to find out if the mirror has fresher data
+        isLoadingDiscord.value = true;
+        const meta = await fetchMirrorMeta();
+        if (meta) {
+            mirrorMeta.value = meta;
+            addLog('debug', `Espejo: ${meta.status} | sha256: ${meta.sha256?.slice(0, 12)}…`);
+        }
 
         try {
-            await Promise.all([executeMirror(), executeBundled()]);
-        } catch {
-            addLog('error', 'Error al obtener la lista de juegos.');
-        }
+            const cacheIsFresh =
+                !force
+                && cached
+                && cachedMeta
+                && meta
+                && cachedMeta.sha256 === meta.sha256;
 
-        if (errorMirror.value) {
-            fetchError.value = 'Error al obtener lista desde el espejo.';
-            addLog('error', 'Error al obtener lista desde espejo');
-        }
+            if (cacheIsFresh) {
+                addLog('info', 'Cache al día — sin descarga');
+            } else if (meta || !cached) {
+                if (cached && meta) {
+                    addLog('info', 'Cambios detectados en el espejo, actualizando...');
+                } else {
+                    addLog('info', 'Descargando lista de juegos...');
+                }
 
-        if (errorBundled.value) {
-            addLog('error', 'Error al cargar lista local');
-        }
-
-        if (fetchError.value && errorBundled.value) {
-            await message('Hubo un error al obtener la lista de juegos. ' + fetchError.value, {
-                title: 'Error al obtener juegos',
-                kind: 'error',
-                buttons: { ok: 'Aceptar' }
-            });
-        }
-
-        if (gameListFromMirror.value && gameListFromMirror.value?.length > 0 && isValidGameList(gameListFromMirror.value)) {
-            gameDB.value = gameListFromMirror.value as Game[] || [];
-            addLog('info', `Usando lista del espejo. ${gameListFromMirror.value.length} juegos.`);
-        } else {
-            addLog('info', `Usando lista local. ${bundledGameList.value.length} juegos.`);
-            gameDB.value = bundledGameList.value;
-        }
-
-        timeoutId = setTimeout(() => {
+                try {
+                    const fresh = await fetchFullGameList();
+                    if (fresh && isValidGameList(fresh)) {
+                        gameDB.value = fresh as Game[];
+                        const cacheOk = await idbSet(CACHE_DB_KEY, fresh);
+                        if (meta) await idbSet(CACHE_META_KEY, { sha256: meta.sha256, fetched_at: Date.now() });
+                        isReadyDiscord.value = true;
+                        addLog('info', `Lista actualizada: ${fresh.length} juegos${cacheOk ? ' (cacheados)' : ''}`);
+                    } else {
+                        throw new Error('Lista del mirror inválida');
+                    }
+                } catch (e) {
+                    fetchError.value = String(e);
+                    addLog('error', `Error al descargar lista: ${e}`);
+                    if (!cached) {
+                        const bundled = await loadBundled();
+                        gameDB.value = bundled;
+                        addLog('warning', `Usando lista local (${bundled.length} juegos)`);
+                    }
+                }
+            } else {
+                addLog('warning', 'Sin metadatos remotos, usando cache local');
+            }
+        } finally {
+            isLoadingDiscord.value = false;
             allFetchDone.value = true;
-        }, 1800);
-    }
-
-    watch(allFetchDone, (newVal) => {
-        if (newVal && timeoutId) {
-            clearTimeout(timeoutId);
         }
-    });
+    }
 
     tryOnMounted(async () => {
         await fetchGameList();
     });
 
     return {
-        gameListFromMirror,
-        bundledGameList,
         fetchError,
         isReadyDiscord,
         isReadyBundled,

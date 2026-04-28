@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import type { Game } from '@/types/types';
+import { isGameQuestCompatible } from '@/utils/game-compat';
+import GameIcon from './GameIcon.vue';
 
 const props = defineProps<{
   games: Game[];
@@ -10,6 +12,10 @@ const emit = defineEmits<{
   select: [game: Game];
   remove: [game: Game];
 }>();
+
+function isCompat(game: Game): boolean {
+  return isGameQuestCompatible(game);
+}
 </script>
 
 <template>
@@ -44,8 +50,18 @@ const emit = defineEmits<{
       >
         <div class="game-item-left">
           <div class="game-status-dot" :class="{ running: game.is_running }"></div>
+          <GameIcon :app-id="game.id" :name="game.name" :size="32" />
           <div class="game-item-info">
-            <span class="game-item-name">{{ game.name }}</span>
+            <div class="game-item-name-row">
+              <span class="game-item-name">{{ game.name }}</span>
+              <span
+                v-if="!isCompat(game)"
+                class="compat-badge rpc-only"
+                title="Sin ejecutables Win32. Solo se puede usar Discord RPC (estado visual, no completa quests)."
+              >
+                Solo RPC
+              </span>
+            </div>
             <span v-if="game.is_running" class="game-item-status">En ejecución</span>
           </div>
         </div>
@@ -214,6 +230,13 @@ const emit = defineEmits<{
   min-width: 0;
 }
 
+.game-item-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .game-item-name {
   font-size: 13px;
   font-weight: 500;
@@ -221,6 +244,29 @@ const emit = defineEmits<{
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Compatibility badge */
+.compat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.compat-badge.rpc-only {
+  background: rgba(241, 196, 15, 0.12);
+  color: #f1c40f;
+  border: 1px solid rgba(241, 196, 15, 0.3);
 }
 
 .game-item-status {

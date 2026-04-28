@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { Game, GameExecutable } from '@/types/types';
 import GameExecutables from './GameExecutables.vue';
+import GameIcon from './GameIcon.vue';
+import { getGameCompatibility } from '@/utils/game-compat';
 
-defineProps<{
+const props = defineProps<{
   game: Game | null;
   currentlyPlaying: string | null;
   gameName?: string;
@@ -14,7 +17,12 @@ const emit = defineEmits<{
   play: [payload: { game: Game; executable: GameExecutable }];
   stop: [payload: { game: Game; executable: GameExecutable }];
   installAndPlay: [payload: { game: Game; executable: GameExecutable }];
+  playRpc: [game: Game];
+  stopRpc: [game: Game];
 }>();
+
+const compat = computed(() => (props.game ? getGameCompatibility(props.game) : null));
+const isRpcOnly = computed(() => compat.value?.level === 'rpc-only');
 </script>
 
 <template>
@@ -34,14 +42,19 @@ const emit = defineEmits<{
     <template v-else>
       <div class="details-header">
         <div class="details-title-row">
-          <div class="details-dot" :class="{ running: game.is_running }"></div>
-          <h2 class="details-title">{{ game.name }}</h2>
-        </div>
-        <div class="details-meta">
-          <span class="details-id">{{ game.id }}</span>
-          <span v-if="game.aliases && game.aliases.length > 0" class="details-aliases">
-            {{ game.aliases.slice(0, 3).join(' · ') }}
-          </span>
+          <GameIcon :app-id="game.id" :name="game.name" :size="48" />
+          <div class="details-title-text">
+            <div class="details-title-line">
+              <div class="details-dot" :class="{ running: game.is_running }"></div>
+              <h2 class="details-title">{{ game.name }}</h2>
+            </div>
+            <div class="details-meta">
+              <span class="details-id">{{ game.id }}</span>
+              <span v-if="game.aliases && game.aliases.length > 0" class="details-aliases">
+                {{ game.aliases.slice(0, 3).join(' · ') }}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -53,10 +66,55 @@ const emit = defineEmits<{
         </div>
       </Transition>
 
+      <!-- Compatibility Banner -->
+      <div v-if="compat" class="compat-banner" :class="compat.level">
+        <div class="compat-icon">
+          <svg v-if="compat.level === 'compatible'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M20 6L9 17l-5-5"/>
+          </svg>
+          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+          </svg>
+        </div>
+        <div class="compat-text">
+          <div class="compat-label">{{ compat.label }}</div>
+          <div class="compat-hint">{{ compat.hint }}</div>
+        </div>
+      </div>
+
       <!-- Executables -->
       <div class="details-section">
-        <h3 class="section-label">Ejecutables</h3>
+        <h3 class="section-label">{{ isRpcOnly ? 'Modo Discord RPC' : 'Ejecutables' }}</h3>
+
+        <!-- RPC-only fallback for incompatible games -->
+        <div v-if="isRpcOnly" class="rpc-only-panel">
+          <div class="rpc-only-row">
+            <div class="rpc-only-info">
+              <div class="rpc-only-title">Discord Rich Presence</div>
+              <div class="rpc-only-desc">
+                Conecta vía IPC con el ID del juego ({{ game!.id }}). Mostrará al juego en tu estado de Discord pero <strong>no progresarán quests</strong>.
+              </div>
+            </div>
+            <button
+              class="rpc-launch-btn"
+              :class="{ 'is-stop': game!.is_running }"
+              :disabled="isBusy"
+              @click="game!.is_running ? emit('stopRpc', game!) : emit('playRpc', game!)"
+            >
+              <svg v-if="!game!.is_running" width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                <path d="M2.5 1.5L10.5 6L2.5 10.5V1.5Z"/>
+              </svg>
+              <svg v-else width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+                <rect width="10" height="10" rx="2"/>
+              </svg>
+              <span>{{ game!.is_running ? 'Detener' : 'Iniciar RPC' }}</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Normal executables list -->
         <GameExecutables
+          v-else
           :game="game"
           :is-busy="isBusy"
           :loading-exe-key="loadingExeKey"
@@ -113,9 +171,23 @@ const emit = defineEmits<{
 
 .details-title-row {
   display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.details-title-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.details-title-line {
+  display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 8px;
 }
 
 .details-dot {
@@ -144,7 +216,6 @@ const emit = defineEmits<{
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-left: 20px;
 }
 
 .details-id {
@@ -183,6 +254,135 @@ const emit = defineEmits<{
 @keyframes pulse-glow {
   0%, 100% { box-shadow: 0 0 6px rgba(87, 242, 135, 0.4); }
   50% { box-shadow: 0 0 12px rgba(87, 242, 135, 0.6); }
+}
+
+/* Compatibility Banner */
+.compat-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 12px 18px 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid;
+}
+
+.compat-banner.compatible {
+  background: rgba(46, 204, 113, 0.06);
+  border-color: rgba(46, 204, 113, 0.2);
+}
+
+.compat-banner.rpc-only {
+  background: rgba(241, 196, 15, 0.06);
+  border-color: rgba(241, 196, 15, 0.2);
+}
+
+.compat-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.compat-banner.compatible .compat-icon { color: #2ecc71; }
+.compat-banner.rpc-only .compat-icon { color: #f1c40f; }
+
+.compat-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.compat-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.compat-banner.compatible .compat-label { color: #2ecc71; }
+.compat-banner.rpc-only .compat-label { color: #f1c40f; }
+
+.compat-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+/* RPC-only panel */
+.rpc-only-panel {
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-subtle);
+  padding: 12px;
+}
+
+.rpc-only-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.rpc-only-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.rpc-only-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.rpc-only-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.rpc-only-desc strong {
+  color: #f1c40f;
+  font-weight: 600;
+}
+
+.rpc-launch-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: none;
+  background: var(--accent);
+  color: white;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+  font-family: inherit;
+}
+
+.rpc-launch-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: scale(1.04);
+  box-shadow: 0 0 14px var(--accent-glow);
+}
+
+.rpc-launch-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.rpc-launch-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.rpc-launch-btn.is-stop {
+  background: var(--danger);
+}
+
+.rpc-launch-btn.is-stop:hover:not(:disabled) {
+  background: #d63638;
+  box-shadow: 0 0 14px rgba(237, 66, 69, 0.3);
 }
 
 /* Section */

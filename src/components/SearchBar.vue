@@ -6,6 +6,8 @@ import { useFuse } from '@vueuse/integrations/useFuse';
 import { UseFuseOptions } from '@vueuse/integrations';
 import Fuse from 'fuse.js';
 import type { Game } from '@/types/types';
+import { isGameQuestCompatible } from '@/utils/game-compat';
+import GameIcon from './GameIcon.vue';
 
 const props = defineProps<{
   gameDB: Game[];
@@ -66,6 +68,10 @@ function handleClickOutside(_e: FocusEvent) {
     isOpen.value = false;
   }, 150);
 }
+
+function isCompatible(game: Game): boolean {
+  return isGameQuestCompatible(game);
+}
 </script>
 
 <template>
@@ -109,8 +115,18 @@ function handleClickOutside(_e: FocusEvent) {
           @mousedown.prevent="handleSelect(result.item)"
           tabindex="-1"
         >
+          <GameIcon :app-id="result.item.id" :name="result.item.name" :size="32" />
           <div class="dropdown-item-info">
-            <span class="dropdown-item-name">{{ result.item.name }}</span>
+            <div class="dropdown-item-name-row">
+              <span class="dropdown-item-name">{{ result.item.name }}</span>
+              <span
+                v-if="!isCompatible(result.item)"
+                class="dropdown-compat-badge"
+                title="Sin ejecutables Win32. Solo soporta Discord RPC (no completa quests)."
+              >
+                Solo RPC
+              </span>
+            </div>
             <span class="dropdown-item-id">{{ result.item.id }}</span>
           </div>
           <Transition name="badge-swap" mode="out-in">
@@ -217,15 +233,20 @@ function handleClickOutside(_e: FocusEvent) {
 .dropdown-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border: none;
   background: transparent;
   cursor: pointer;
   border-radius: var(--radius-sm);
   transition: background 0.15s ease;
   text-align: left;
+}
+
+.dropdown-item-info {
+  flex: 1;
+  min-width: 0;
 }
 
 .dropdown-item:hover {
@@ -239,6 +260,13 @@ function handleClickOutside(_e: FocusEvent) {
   min-width: 0;
 }
 
+.dropdown-item-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .dropdown-item-name {
   font-size: 14px;
   font-weight: 500;
@@ -246,6 +274,24 @@ function handleClickOutside(_e: FocusEvent) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.dropdown-compat-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  cursor: help;
+  white-space: nowrap;
+  background: rgba(241, 196, 15, 0.12);
+  color: #f1c40f;
+  border: 1px solid rgba(241, 196, 15, 0.3);
 }
 
 .dropdown-item-id {

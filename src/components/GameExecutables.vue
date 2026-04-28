@@ -1,7 +1,7 @@
 <template>
     <div class="executables-list">
         <div v-if="filteredExecutables.length === 0" class="exe-empty">
-            No se encontraron ejecutables compatibles
+            <p class="exe-empty-text">No se encontraron ejecutables compatibles</p>
         </div>
         <div v-for="(executable) in filteredExecutables" :key="executable.name"
             class="exe-row">
@@ -40,6 +40,7 @@
                 </svg>
             </button>
         </div>
+
     </div>
 </template>
 
