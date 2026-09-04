@@ -19,10 +19,13 @@ const emit = defineEmits<{
   installAndPlay: [payload: { game: Game; executable: GameExecutable }];
   playRpc: [game: Game];
   stopRpc: [game: Game];
+  playSteam: [game: Game];
+  stopSteam: [game: Game];
 }>();
 
 const compat = computed(() => (props.game ? getGameCompatibility(props.game) : null));
 const isRpcOnly = computed(() => compat.value?.level === 'rpc-only');
+const isSteamCandidate = computed(() => compat.value?.level === 'steam');
 </script>
 
 <template>
@@ -84,10 +87,35 @@ const isRpcOnly = computed(() => compat.value?.level === 'rpc-only');
 
       <!-- Executables -->
       <div class="details-section">
-        <h3 class="section-label">{{ isRpcOnly ? 'Modo Discord RPC' : 'Ejecutables' }}</h3>
+        <h3 class="section-label">{{ isSteamCandidate ? 'Integración Steam' : isRpcOnly ? 'Modo Discord RPC' : 'Ejecutables' }}</h3>
+
+        <div v-if="isSteamCandidate" class="rpc-only-panel steam-panel">
+          <div class="rpc-only-row">
+            <div class="rpc-only-info">
+              <div class="rpc-only-title steam-title">Steam Quest Runner</div>
+              <div class="rpc-only-desc">
+                Usa el AppID y la ruta oficial de Steam únicamente porque Discord no publica un ejecutable Win32 para este juego.
+              </div>
+            </div>
+            <button
+              class="rpc-launch-btn steam-launch-btn"
+              :class="{ 'is-stop': game!.is_running }"
+              :disabled="isBusy"
+              @click="game!.is_running ? emit('stopSteam', game!) : emit('playSteam', game!)"
+            >
+              <svg v-if="!game!.is_running" width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                <path d="M2.5 1.5L10.5 6L2.5 10.5V1.5Z"/>
+              </svg>
+              <svg v-else width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+                <rect width="10" height="10" rx="2"/>
+              </svg>
+              <span>{{ game!.is_running ? 'Detener' : 'Iniciar Steam' }}</span>
+            </button>
+          </div>
+        </div>
 
         <!-- RPC-only fallback for incompatible games -->
-        <div v-if="isRpcOnly" class="rpc-only-panel">
+        <div v-else-if="isRpcOnly" class="rpc-only-panel">
           <div class="rpc-only-row">
             <div class="rpc-only-info">
               <div class="rpc-only-title">Discord Rich Presence</div>
@@ -277,6 +305,11 @@ const isRpcOnly = computed(() => compat.value?.level === 'rpc-only');
   border-color: rgba(241, 196, 15, 0.2);
 }
 
+.compat-banner.steam {
+  border-color: rgba(102, 192, 244, 0.28);
+  background: rgba(27, 40, 56, 0.48);
+}
+
 .compat-icon {
   flex-shrink: 0;
   margin-top: 1px;
@@ -284,6 +317,7 @@ const isRpcOnly = computed(() => compat.value?.level === 'rpc-only');
 
 .compat-banner.compatible .compat-icon { color: #2ecc71; }
 .compat-banner.rpc-only .compat-icon { color: #f1c40f; }
+.compat-banner.steam .compat-icon { color: #66c0f4; }
 
 .compat-text {
   display: flex;
@@ -300,6 +334,15 @@ const isRpcOnly = computed(() => compat.value?.level === 'rpc-only');
 
 .compat-banner.compatible .compat-label { color: #2ecc71; }
 .compat-banner.rpc-only .compat-label { color: #f1c40f; }
+.compat-banner.steam .compat-label { color: #66c0f4; }
+
+.rpc-only-title.steam-title { color: #66c0f4; }
+
+.rpc-launch-btn.steam-launch-btn {
+  background: rgba(102, 192, 244, 0.16);
+  border-color: rgba(102, 192, 244, 0.32);
+  color: #66c0f4;
+}
 
 .compat-hint {
   font-size: 11px;
@@ -365,6 +408,11 @@ const isRpcOnly = computed(() => compat.value?.level === 'rpc-only');
   background: var(--accent-hover);
   transform: scale(1.04);
   box-shadow: 0 0 14px var(--accent-glow);
+}
+
+.rpc-launch-btn.steam-launch-btn:hover:not(:disabled) {
+  background: rgba(102, 192, 244, 0.24);
+  box-shadow: 0 0 14px rgba(102, 192, 244, 0.2);
 }
 
 .rpc-launch-btn:active:not(:disabled) {

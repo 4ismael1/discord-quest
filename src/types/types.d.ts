@@ -9,6 +9,12 @@ export interface GameExecutable {
   is_running?: boolean;
   is_installed?: boolean;
 }
+
+export interface ThirdPartySku {
+  distributor: string;
+  id: string;
+}
+
 export interface Game {
     uid?: string;
     id: string;
@@ -16,6 +22,7 @@ export interface Game {
     executables: GameExecutable[];
     aliases?: string[];
     themes?: string[];
+    third_party_skus?: ThirdPartySku[];
     is_running?: boolean;
     is_installed?: boolean;
 }

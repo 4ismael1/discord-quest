@@ -1,7 +1,7 @@
 {
   "name": "discord-quest",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,11 +9,11 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "build:runner:win": "cd ./src-win && cargo build --release && cd ..",
-    "copy:runner:win": "cp ./src-win/target/release/src-win.exe ./src-tauri/resources/src-win.exe",
-    "copy:resources": "cp ./src-win/target/release/src-win.exe ./src-tauri/target/release/data/src-win.exe",
+    "copy:runner:win": "node -e \"require('fs').copyFileSync('src-win/target/release/src-win.exe','src-tauri/resources/src-win.exe')\"",
+    "copy:resources": "node -e \"require('fs').mkdirSync('src-tauri/target/release/data',{recursive:true});require('fs').copyFileSync('src-win/target/release/src-win.exe','src-tauri/target/release/data/src-win.exe')\"",
     "sync:runner": "npm run build:runner:win && npm run copy:runner:win && npm run copy:resources",
-    "build:all": "tauri build",
-    "tauri:dev": "tauri dev"
+    "build:all": "npm run sync:runner && tauri build",
+    "tauri:dev": "npm run sync:runner && tauri dev"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.3",

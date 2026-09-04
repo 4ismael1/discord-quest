@@ -23,6 +23,8 @@
 - Actualizacion optimista de la UI (respuesta instantanea)
 - Ciclo de vida bidireccional entre la app y la ventana fake
 - Terminacion graceful de procesos
+- Modo Steam automatico para juegos sin ejecutable Win32 publicado por Discord
+- Limpieza y restauracion automatica de los archivos temporales del modo Steam
 
 ## Como funciona
 
@@ -43,6 +45,14 @@ DiscordQuest/
 
 > [!TIP]
 > Con el tiempo estos archivos pueden acumularse. Puedes eliminar manualmente las carpetas dentro de `games/` cuando quieras.
+
+### Juegos sin ruta ejecutable: modo Steam
+
+Si Discord no publica un ejecutable Win32 pero si un AppID de Steam, DiscordQuest usa un flujo separado. Consulta la metadata de SteamCMD, coloca temporalmente el runner en `Steam\\steamapps\\common\\<juego>` y genera `appmanifest_<appid>.acf` con `StateFlags=1026`.
+
+Antes de reemplazar un archivo existente crea un respaldo. Al detener el proceso, cerrar su ventana o salir de DiscordQuest, restaura los originales y elimina el runner, el manifiesto, el marcador y los respaldos temporales. Un journal local permite terminar esa limpieza en el siguiente inicio si hubo un cierre inesperado.
+
+Steam debe estar instalado y registrado en Windows. El cliente de Steam no necesita permanecer abierto, pero se requiere conexion al iniciar para consultar SteamCMD. Este modo solo se ofrece a juegos que no pueden usar el flujo normal.
 
 ---
 
@@ -74,20 +84,13 @@ Descarga `DiscordQuest_x64-setup.exe` desde [Releases](../../releases), ejecutal
 
 ```bash
 npm install
-
-cd src-win
-cargo build --release
-cd ..
-mkdir -p src-tauri/resources
-cp src-win/target/release/src-win.exe src-tauri/resources/src-win.exe
-
-npx tauri dev
+npm run tauri:dev
 ```
 
 ### Build
 
 ```bash
-npx tauri build
+npm run build:all
 ```
 
 ---

@@ -1,39 +1,27 @@
-# DiscordQuest v1.0.0
+# DiscordQuest v1.3.0
 
-Simulador de actividad de juegos verificados de Discord para completar Discord Quests sin instalar los juegos reales.
+Esta versión parte nuevamente de la base estable de v1.1.0 e incorpora el modo Steam de forma aislada.
 
-## Descargar
+## Novedades
 
-📦 **[DiscordQuest_1.0.0_x64-setup.exe]()**  
-Instalador para Windows (x64) — No requiere permisos de administrador.
+- Nuevo flujo Steam solo para juegos sin ejecutables Win32 publicados por Discord y con AppID de Steam disponible.
+- Creación temporal del runner en `Steam\\steamapps\\common\\<juego>` y de `appmanifest_<appid>.acf` con `StateFlags=1026`.
+- Consulta de la ruta y el ejecutable mediante los metadatos públicos de SteamCMD.
+- Restauración automática de cualquier ejecutable o appmanifest preexistente.
+- Limpieza automática al detener el juego, cerrar el runner o salir de DiscordQuest.
+- Journal de recuperación para completar la limpieza después de un cierre inesperado.
+- Inicio del runner más tolerante en Windows 10 y Windows 11; un fallo de la bandeja ya no impide abrir su ventana.
+- Se conserva sin cambios el flujo normal para los juegos que sí publican una ruta ejecutable válida.
 
-> WebView2 se instala automáticamente si no lo tienes. Viene preinstalado en Windows 11.
+## Requisitos del modo Steam
 
-## Características
+- Steam debe estar instalado y registrado en Windows.
+- No es obligatorio mantener Steam abierto para iniciar el runner.
+- Se necesita conexión al iniciar para consultar los metadatos de SteamCMD.
 
-- Simula jugar juegos verificados de Discord sin instalarlos
-- Completa Discord Quests que requieren 15 minutos de juego
-- Búsqueda rápida entre +21,000 juegos detectables por Discord
-- Lista de juegos persistente entre sesiones
-- Detección automática cuando el juego se cierra externamente
-- Ventana fake con timer y bandeja del sistema
-- UI optimista con respuesta instantánea
-- Ciclo de vida bidireccional entre la app y la ventana fake
+## Correcciones
 
-## Tech Stack
-
-- **Rust** — Backend (Tauri v2) + Ventana fake (Win32 API)
-- **Vue.js 3** — Frontend con Composition API + TypeScript
-- **Fuse.js** — Búsqueda difusa de juegos
-
-## Instalación
-
-1. Descarga `DiscordQuest_1.0.0_x64-setup.exe`
-2. Ejecuta el instalador
-3. Abre **DiscordQuest** desde el menú de inicio
-4. Abre Discord y busca un Quest activo
-5. Selecciona el juego requerido y dale Play
-
-## Aviso
-
-Esta herramienta es para fines educativos y uso personal. Úsala bajo tu propia responsabilidad.
+- Separación entre procesos normales, RPC y Steam para evitar detener el proceso equivocado.
+- Prevención de dobles inicios y de sesiones Steam superpuestas.
+- Validación de rutas para impedir escrituras fuera de `steamapps\\common`.
+- Empaquetado reproducible del runner antes de construir el instalador.

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Game } from '@/types/types';
-import { isGameQuestCompatible } from '@/utils/game-compat';
+import { getGameCompatibility } from '@/utils/game-compat';
 import GameIcon from './GameIcon.vue';
 
 const props = defineProps<{
@@ -13,8 +13,8 @@ const emit = defineEmits<{
   remove: [game: Game];
 }>();
 
-function isCompat(game: Game): boolean {
-  return isGameQuestCompatible(game);
+function compatibility(game: Game) {
+  return getGameCompatibility(game);
 }
 </script>
 
@@ -55,11 +55,12 @@ function isCompat(game: Game): boolean {
             <div class="game-item-name-row">
               <span class="game-item-name">{{ game.name }}</span>
               <span
-                v-if="!isCompat(game)"
-                class="compat-badge rpc-only"
-                title="Sin ejecutables Win32. Solo se puede usar Discord RPC (estado visual, no completa quests)."
+                v-if="compatibility(game).level !== 'compatible'"
+                class="compat-badge"
+                :class="compatibility(game).level"
+                :title="compatibility(game).hint"
               >
-                Solo RPC
+                {{ compatibility(game).label }}
               </span>
             </div>
             <span v-if="game.is_running" class="game-item-status">En ejecución</span>
@@ -267,6 +268,12 @@ function isCompat(game: Game): boolean {
   background: rgba(241, 196, 15, 0.12);
   color: #f1c40f;
   border: 1px solid rgba(241, 196, 15, 0.3);
+}
+
+.compat-badge.steam {
+  background: rgba(102, 192, 244, 0.12);
+  color: #66c0f4;
+  border: 1px solid rgba(102, 192, 244, 0.3);
 }
 
 .game-item-status {

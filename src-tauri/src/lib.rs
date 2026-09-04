@@ -7,6 +7,8 @@ use std::process::Child;
 use std::sync::Mutex;
 use tauri::{path::BaseDirectory, Emitter, Manager};
 
+mod steam;
+
 // Global process registry: maps "app_id:executable_name" -> Child
 static PROCESS_REGISTRY: OnceCell<Mutex<HashMap<String, Child>>> = OnceCell::new();
 
@@ -28,10 +30,7 @@ async fn create_fake_game(
 
     let normalized_path = Path::new(path).to_string_lossy().to_string();
 
-    let game_folder_path = exe_dir
-        .join("games")
-        .join(&app_id)
-        .join(normalized_path);
+    let game_folder_path = exe_dir.join("games").join(&app_id).join(normalized_path);
 
     match std::fs::create_dir_all(&game_folder_path) {
         Ok(_) => {}
@@ -69,10 +68,7 @@ async fn run_background_process(
 
     let normalized_path = Path::new(path).to_string_lossy().to_string();
 
-    let game_folder_path = exe_dir
-        .join("games")
-        .join(&app_id)
-        .join(normalized_path);
+    let game_folder_path = exe_dir.join("games").join(&app_id).join(normalized_path);
     let executable_path = game_folder_path.join(executable_name);
 
     let mut args = vec!["--title".to_string(), name.to_string()];
@@ -185,7 +181,7 @@ async fn stop_process(exec_name: String, app_id: Option<String>) -> Result<(), S
 
         // Not in registry — force kill by executable name (non-blocking)
         let _ = std::process::Command::new("taskkill")
-            .args(&["/F", "/IM", &exec_name])
+            .args(["/F", "/IM", &exec_name])
             .creation_flags(0x08000000)
             .spawn();
         return Ok(());
@@ -193,7 +189,7 @@ async fn stop_process(exec_name: String, app_id: Option<String>) -> Result<(), S
 
     // No app_id: force kill by image name (non-blocking)
     let _ = std::process::Command::new("taskkill")
-        .args(&["/F", "/IM", &exec_name])
+        .args(["/F", "/IM", &exec_name])
         .creation_flags(0x08000000)
         .spawn();
     Ok(())
@@ -207,16 +203,13 @@ fn get_active_processes() -> Vec<serde_json::Value> {
         .map(|key| {
             let parts: Vec<&str> = key.splitn(2, ':').collect();
             serde_json::json!({
-                "app_id": parts.get(0).unwrap_or(&""),
+                "app_id": parts.first().unwrap_or(&""),
                 "executable_name": parts.get(1).unwrap_or(&""),
                 "key": key,
             })
         })
         .collect()
 }
-
-
-
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -228,8 +221,16 @@ pub fn run() {
             create_fake_game,
             stop_process,
             run_background_process,
+            steam::recover_steam_session,
+            steam::run_steam_game,
+            steam::stop_steam_process,
             get_active_processes
         ])
-        .run(tauri::generate_context!())
-        .expect("Error al ejecutar la aplicación");
+        .build(tauri::generate_context!())
+        .expect("Error al preparar la aplicación")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                steam::shutdown();
+            }
+        });
 }

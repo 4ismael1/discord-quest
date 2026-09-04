@@ -1,33 +1,30 @@
-#![windows_subsystem = "windows"] 
+#![windows_subsystem = "windows"]
 
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExA, DefWindowProcA, DispatchMessageA, GetMessageA, PostQuitMessage, 
-    RegisterClassA, ShowWindow, TranslateMessage, SetTimer,
-    CW_USEDEFAULT, MSG, SW_SHOWNORMAL, WINDOW_EX_STYLE, 
-    WM_CREATE, WM_DESTROY, WM_PAINT, WM_TIMER, WNDCLASSA, WS_CAPTION, 
-    WS_SYSMENU, WS_MINIMIZEBOX,
-};
-use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, CreateSolidBrush, FillRect, SelectObject, DeleteObject,
-    CreateFontA, SetBkMode, SetTextColor, DrawTextA,
-    CreatePen, MoveToEx, LineTo, RoundRect,
-    HDC, HFONT, PAINTSTRUCT, TRANSPARENT, DRAW_TEXT_FORMAT, DT_LEFT, DT_SINGLELINE, DT_VCENTER, 
-    DT_CENTER, PS_SOLID, FW_BOLD, FW_NORMAL, FW_SEMIBOLD,
-    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 
-    DEFAULT_PITCH, FF_SWISS, FONT_CHARSET, FONT_OUTPUT_PRECISION, 
-    FONT_CLIP_PRECISION, FONT_QUALITY,
-};
-use windows::Win32::System::LibraryLoader::GetModuleHandleA;
-use windows::core::PCSTR;
-use std::ffi::CString;
 use std::env;
+use std::ffi::CString;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::SystemTime;
+use windows::core::PCSTR;
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, CreateFontA, CreatePen, CreateSolidBrush, DeleteObject, DrawTextA, EndPaint,
+    FillRect, LineTo, MoveToEx, RoundRect, SelectObject, SetBkMode, SetTextColor,
+    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DRAW_TEXT_FORMAT,
+    DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER, FF_SWISS, FONT_CHARSET, FONT_CLIP_PRECISION,
+    FONT_OUTPUT_PRECISION, FONT_QUALITY, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HDC, HFONT,
+    OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
+};
+use windows::Win32::System::LibraryLoader::GetModuleHandleA;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExA, DefWindowProcA, DispatchMessageA, GetMessageA, PostQuitMessage,
+    RegisterClassA, SetTimer, ShowWindow, TranslateMessage, CW_USEDEFAULT, MSG, SW_SHOWNORMAL,
+    WINDOW_EX_STYLE, WM_CREATE, WM_DESTROY, WM_PAINT, WM_TIMER, WNDCLASSA, WS_CAPTION,
+    WS_MINIMIZEBOX, WS_SYSMENU,
+};
 
-mod tray;
 mod discord_ipc;
+mod tray;
 use tray::create_tray_icon;
 
 const WIDTH: i32 = 380;
@@ -37,11 +34,13 @@ const TIMER_ID: usize = 1;
 static START_TIME: AtomicU64 = AtomicU64::new(0);
 static GAME_TITLE: OnceLock<String> = OnceLock::new();
 static RPC_MODE: OnceLock<bool> = OnceLock::new();
+static STEAM_MODE: OnceLock<bool> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub title: String,
     pub app_id: Option<String>,
+    pub steam_mode: bool,
 }
 
 impl Default for Config {
@@ -49,6 +48,7 @@ impl Default for Config {
         Config {
             title: "DiscordQuest".to_string(),
             app_id: None,
+            steam_mode: false,
         }
     }
 }
@@ -56,7 +56,7 @@ impl Default for Config {
 fn parse_args() -> Config {
     let args: Vec<String> = env::args().collect();
     let mut config = Config::default();
-    
+
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -76,12 +76,16 @@ fn parse_args() -> Config {
                     i += 1;
                 }
             }
+            "--steam-mode" => {
+                config.steam_mode = true;
+                i += 1;
+            }
             _ => {
                 i += 1;
             }
         }
     }
-    
+
     config
 }
 
@@ -89,9 +93,14 @@ fn create_font(_hdc: HDC, size: i32, weight: i32, name: &str) -> HFONT {
     unsafe {
         let font_name = CString::new(name).unwrap_or_else(|_| CString::new("Segoe UI").unwrap());
         CreateFontA(
-            size, 0, 0, 0,
+            size,
+            0,
+            0,
+            0,
             weight,
-            0, 0, 0,
+            0,
+            0,
+            0,
             FONT_CHARSET(DEFAULT_CHARSET.0),
             FONT_OUTPUT_PRECISION(OUT_DEFAULT_PRECIS.0),
             FONT_CLIP_PRECISION(CLIP_DEFAULT_PRECIS.0),
@@ -113,7 +122,17 @@ fn format_elapsed(secs: u64) -> String {
     }
 }
 
-fn draw_rounded_rect(hdc: HDC, left: i32, top: i32, right: i32, bottom: i32, radius: i32, fill_color: COLORREF, border_color: COLORREF) {
+#[allow(clippy::too_many_arguments)]
+fn draw_rounded_rect(
+    hdc: HDC,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    radius: i32,
+    fill_color: COLORREF,
+    border_color: COLORREF,
+) {
     unsafe {
         let brush = CreateSolidBrush(fill_color);
         let pen = CreatePen(PS_SOLID, 1, border_color);
@@ -127,14 +146,30 @@ fn draw_rounded_rect(hdc: HDC, left: i32, top: i32, right: i32, bottom: i32, rad
     }
 }
 
-fn draw_text_at(hdc: HDC, text: &str, x: i32, y: i32, w: i32, h: i32, color: COLORREF, font: HFONT, flags: DRAW_TEXT_FORMAT) {
+#[allow(clippy::too_many_arguments)]
+fn draw_text_at(
+    hdc: HDC,
+    text: &str,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: COLORREF,
+    font: HFONT,
+    flags: DRAW_TEXT_FORMAT,
+) {
     unsafe {
         let old_font = SelectObject(hdc, font.into());
         SetTextColor(hdc, color);
         SetBkMode(hdc, TRANSPARENT);
         let cstr = CString::new(text).unwrap_or_else(|_| CString::new("?").unwrap());
         let bytes = cstr.as_bytes();
-        let mut rc = RECT { left: x, top: y, right: x + w, bottom: y + h };
+        let mut rc = RECT {
+            left: x,
+            top: y,
+            right: x + w,
+            bottom: y + h,
+        };
         DrawTextA(hdc, &mut Vec::from(bytes), &mut rc, flags);
         SelectObject(hdc, old_font);
     }
@@ -144,7 +179,7 @@ fn paint_window(hwnd: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(hwnd, &mut ps);
-        
+
         let mut client_rect = RECT::default();
         let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut client_rect);
         let cw = client_rect.right;
@@ -156,7 +191,12 @@ fn paint_window(hwnd: HWND) {
         let _ = DeleteObject(bg_brush.into());
 
         // ── Top accent bar ──
-        let accent_rect = RECT { left: 0, top: 0, right: cw, bottom: 3 };
+        let accent_rect = RECT {
+            left: 0,
+            top: 0,
+            right: cw,
+            bottom: 3,
+        };
         let accent_brush = CreateSolidBrush(COLORREF(0x00F26558)); // #5865F2 in BGR
         FillRect(hdc, &accent_rect, accent_brush);
         let _ = DeleteObject(accent_brush.into());
@@ -168,21 +208,50 @@ fn paint_window(hwnd: HWND) {
         let font_timer = create_font(hdc, 32, FW_BOLD.0 as i32, "Cascadia Code");
         let font_small = create_font(hdc, 11, FW_NORMAL.0 as i32, "Segoe UI");
 
-        let title = GAME_TITLE.get().map(|s| s.as_str()).unwrap_or("DiscordQuest");
+        let title = GAME_TITLE
+            .get()
+            .map(|s| s.as_str())
+            .unwrap_or("DiscordQuest");
         let dt_left_single = DT_LEFT | DT_SINGLELINE | DT_VCENTER;
         let dt_left = DT_LEFT | DT_SINGLELINE;
         let dt_center = DT_CENTER | DT_SINGLELINE | DT_VCENTER;
 
-        // ── Status pill ──  
-        draw_rounded_rect(hdc, 20, 18, 90, 38, 10, 
+        // ── Status pill ──
+        draw_rounded_rect(
+            hdc,
+            20,
+            18,
+            90,
+            38,
+            10,
             COLORREF(0x001A3A1A),
             COLORREF(0x00287F28),
         );
         let dot_color = COLORREF(0x0087F257); // #57F287 green
-        draw_text_at(hdc, "* Activo", 26, 18, 60, 20, dot_color, font_label, dt_left_single);
+        draw_text_at(
+            hdc,
+            "* Activo",
+            26,
+            18,
+            60,
+            20,
+            dot_color,
+            font_label,
+            dt_left_single,
+        );
 
         // ── Game title ──
-        draw_text_at(hdc, title, 20, 48, cw - 40, 28, COLORREF(0x00F4F0F0), font_title, dt_left);
+        draw_text_at(
+            hdc,
+            title,
+            20,
+            48,
+            cw - 40,
+            28,
+            COLORREF(0x00F4F0F0),
+            font_title,
+            dt_left,
+        );
 
         // ── Separator line ──
         let sep_pen = CreatePen(PS_SOLID, 1, COLORREF(0x003A2A2A));
@@ -196,52 +265,156 @@ fn paint_window(hwnd: HWND) {
         let card_y = 96;
         let card_h = 52;
         let half_w = (cw - 52) / 2;
-        
+
         // Card 1: Estado
-        draw_rounded_rect(hdc, 20, card_y, 20 + half_w, card_y + card_h, 8,
+        draw_rounded_rect(
+            hdc,
+            20,
+            card_y,
+            20 + half_w,
+            card_y + card_h,
+            8,
             COLORREF(0x001E1A1E),
             COLORREF(0x002A262A),
         );
-        draw_text_at(hdc, "ESTADO", 30, card_y + 8, half_w - 20, 14, COLORREF(0x007A647A), font_label, dt_left);
-        draw_text_at(hdc, "Simulando", 30, card_y + 26, half_w - 20, 16, COLORREF(0x0087F257), font_value, dt_left);
+        draw_text_at(
+            hdc,
+            "ESTADO",
+            30,
+            card_y + 8,
+            half_w - 20,
+            14,
+            COLORREF(0x007A647A),
+            font_label,
+            dt_left,
+        );
+        draw_text_at(
+            hdc,
+            "Simulando",
+            30,
+            card_y + 26,
+            half_w - 20,
+            16,
+            COLORREF(0x0087F257),
+            font_value,
+            dt_left,
+        );
 
         // Card 2: Tipo
         let card2_x = 20 + half_w + 12;
-        draw_rounded_rect(hdc, card2_x, card_y, card2_x + half_w, card_y + card_h, 8,
+        draw_rounded_rect(
+            hdc,
+            card2_x,
+            card_y,
+            card2_x + half_w,
+            card_y + card_h,
+            8,
             COLORREF(0x001E1A1E),
             COLORREF(0x002A262A),
         );
-        draw_text_at(hdc, "TIPO", card2_x + 10, card_y + 8, half_w - 20, 14, COLORREF(0x007A647A), font_label, dt_left);
-        let tipo_text = if RPC_MODE.get().copied().unwrap_or(false) { "RPC (Solo estado)" } else { "Quest Runner" };
-        let tipo_color = if RPC_MODE.get().copied().unwrap_or(false) {
+        draw_text_at(
+            hdc,
+            "TIPO",
+            card2_x + 10,
+            card_y + 8,
+            half_w - 20,
+            14,
+            COLORREF(0x007A647A),
+            font_label,
+            dt_left,
+        );
+        let tipo_text = if STEAM_MODE.get().copied().unwrap_or(false) {
+            "Steam + Discord"
+        } else if RPC_MODE.get().copied().unwrap_or(false) {
+            "RPC (Solo estado)"
+        } else {
+            "Quest Runner"
+        };
+        let tipo_color = if STEAM_MODE.get().copied().unwrap_or(false) {
+            COLORREF(0x00F4C066)
+        } else if RPC_MODE.get().copied().unwrap_or(false) {
             COLORREF(0x000FB5F2) // amber/yellow #F2B50F BGR
         } else {
             COLORREF(0x00B0A0B0)
         };
-        draw_text_at(hdc, tipo_text, card2_x + 10, card_y + 26, half_w - 20, 16, tipo_color, font_value, dt_left);
+        draw_text_at(
+            hdc,
+            tipo_text,
+            card2_x + 10,
+            card_y + 26,
+            half_w - 20,
+            16,
+            tipo_color,
+            font_value,
+            dt_left,
+        );
 
         // ── Timer section ──
         let timer_y = card_y + card_h + 16;
-        draw_rounded_rect(hdc, 20, timer_y, cw - 20, timer_y + 58, 10,
-            COLORREF(0x00201820), 
+        draw_rounded_rect(
+            hdc,
+            20,
+            timer_y,
+            cw - 20,
+            timer_y + 58,
+            10,
+            COLORREF(0x00201820),
             COLORREF(0x002A262A),
         );
-        draw_text_at(hdc, "TIEMPO ACTIVO", 30, timer_y + 6, 120, 14, COLORREF(0x007A647A), font_label, dt_left);
-        
+        draw_text_at(
+            hdc,
+            "TIEMPO ACTIVO",
+            30,
+            timer_y + 6,
+            120,
+            14,
+            COLORREF(0x007A647A),
+            font_label,
+            dt_left,
+        );
+
         let start = START_TIME.load(Ordering::Relaxed);
-        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs();
-        let elapsed = if now > start { now - start } else { 0 };
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let elapsed = now.saturating_sub(start);
         let time_str = format_elapsed(elapsed);
-        draw_text_at(hdc, &time_str, 20, timer_y + 20, cw - 40, 38, COLORREF(0x00F4F0F0), font_timer, dt_center);
+        draw_text_at(
+            hdc,
+            &time_str,
+            20,
+            timer_y + 20,
+            cw - 40,
+            38,
+            COLORREF(0x00F4F0F0),
+            font_timer,
+            dt_center,
+        );
 
         // ── Footer ──
         let footer_y = ch - 24;
-        let footer_sep = RECT { left: 0, top: footer_y - 1, right: cw, bottom: footer_y };
+        let footer_sep = RECT {
+            left: 0,
+            top: footer_y - 1,
+            right: cw,
+            bottom: footer_y,
+        };
         let footer_line = CreateSolidBrush(COLORREF(0x002A222A));
         FillRect(hdc, &footer_sep, footer_line);
         let _ = DeleteObject(footer_line.into());
-        
-        draw_text_at(hdc, "DiscordQuest - No cerrar esta ventana", 20, footer_y + 2, cw - 40, 16, COLORREF(0x00504050), font_small, dt_left);
+
+        draw_text_at(
+            hdc,
+            "DiscordQuest - No cerrar esta ventana",
+            20,
+            footer_y + 2,
+            cw - 40,
+            16,
+            COLORREF(0x00504050),
+            font_small,
+            dt_left,
+        );
 
         // ── Cleanup fonts ──
         let _ = DeleteObject(font_title.into());
@@ -320,7 +493,7 @@ fn create_native_window(title: &str) -> Result<(HWND, HINSTANCE), Box<dyn std::e
             None,
             Some(HINSTANCE(instance.0)),
             None,
-        ); 
+        );
         match hwnd {
             Ok(hwnd) if !hwnd.0.is_null() => Ok((hwnd, HINSTANCE(instance.0))),
             _ => Err("Error al crear ventana".into()),
@@ -332,7 +505,10 @@ fn main() {
     let config = parse_args();
 
     // Store start time
-    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     START_TIME.store(now, Ordering::Relaxed);
 
     // Store title globally for paint
@@ -342,10 +518,25 @@ fn main() {
     // This sets Rich Presence (visible status) but does NOT trigger quest progress.
     let is_rpc = config.app_id.is_some();
     RPC_MODE.set(is_rpc).ok();
+    STEAM_MODE.set(config.steam_mode).ok();
     if let Some(app_id) = config.app_id.clone() {
         std::thread::spawn(move || {
             discord_ipc::connect_and_set_presence(&app_id);
         });
+    }
+
+    // The simulation window is primary. Explorer's notification area can be
+    // temporarily unavailable on Windows 11, so tray setup is optional.
+    let (hwnd, _instance) = match create_native_window(&config.title) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("Error al crear ventana: {}", e);
+            return;
+        }
+    };
+
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
     }
 
     let tray_menu = tray_icon::menu::Menu::new();
@@ -355,22 +546,18 @@ fn main() {
     let _tray_menu = tray_menu.append_items(&[
         &show_i,
         &tray_icon::menu::PredefinedMenuItem::separator(),
-        &quit_i
+        &quit_i,
     ]);
 
-    let _tray = create_tray_icon(tray_menu, &format!("DiscordQuest - {}", &config.title));
-
-    let (hwnd, _instance) = match create_native_window(&config.title) {
-        Ok(result) => result,
-        Err(e) => {
-            eprintln!("Error al crear ventana: {}", e);
-            return;
+    let _tray = match create_tray_icon(tray_menu, &format!("DiscordQuest - {}", &config.title)) {
+        Ok(tray) => Some(tray),
+        Err(error) => {
+            eprintln!("{}", error);
+            None
         }
     };
-    
-    unsafe { 
-        let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
-        
+
+    unsafe {
         let mut msg = MSG::default();
         loop {
             // Handle tray events
@@ -389,7 +576,7 @@ fn main() {
             if ret.0 == 0 || ret.0 == -1 {
                 break;
             }
-            
+
             let _ = TranslateMessage(&msg);
             DispatchMessageA(&msg);
         }

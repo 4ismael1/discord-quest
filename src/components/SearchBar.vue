@@ -6,7 +6,7 @@ import { useFuse } from '@vueuse/integrations/useFuse';
 import { UseFuseOptions } from '@vueuse/integrations';
 import Fuse from 'fuse.js';
 import type { Game } from '@/types/types';
-import { isGameQuestCompatible } from '@/utils/game-compat';
+import { getGameCompatibility } from '@/utils/game-compat';
 import GameIcon from './GameIcon.vue';
 
 const props = defineProps<{
@@ -51,6 +51,10 @@ const fuseOptions = computed<UseFuseOptions<Game>>(() => ({
 
 const { results: searchResults } = useFuse(debouncedSearchQuery, () => props.gameDB, fuseOptions);
 
+function compatibility(game: Game) {
+  return getGameCompatibility(game);
+}
+
 function handleSelect(game: Game) {
   if (props.addedIds?.includes(game.id)) return; // Already added
   emit('select', game);
@@ -69,9 +73,6 @@ function handleClickOutside(_e: FocusEvent) {
   }, 150);
 }
 
-function isCompatible(game: Game): boolean {
-  return isGameQuestCompatible(game);
-}
 </script>
 
 <template>
@@ -120,11 +121,12 @@ function isCompatible(game: Game): boolean {
             <div class="dropdown-item-name-row">
               <span class="dropdown-item-name">{{ result.item.name }}</span>
               <span
-                v-if="!isCompatible(result.item)"
+                v-if="compatibility(result.item).level !== 'compatible'"
                 class="dropdown-compat-badge"
-                title="Sin ejecutables Win32. Solo soporta Discord RPC (no completa quests)."
+                :class="compatibility(result.item).level"
+                :title="compatibility(result.item).hint"
               >
-                Solo RPC
+                {{ compatibility(result.item).label }}
               </span>
             </div>
             <span class="dropdown-item-id">{{ result.item.id }}</span>
@@ -292,6 +294,12 @@ function isCompatible(game: Game): boolean {
   background: rgba(241, 196, 15, 0.12);
   color: #f1c40f;
   border: 1px solid rgba(241, 196, 15, 0.3);
+}
+
+.dropdown-compat-badge.steam {
+  background: rgba(102, 192, 244, 0.12);
+  color: #66c0f4;
+  border-color: rgba(102, 192, 244, 0.3);
 }
 
 .dropdown-item-id {

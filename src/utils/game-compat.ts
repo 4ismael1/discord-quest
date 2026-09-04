@@ -1,4 +1,5 @@
 import type { Game, GameExecutable } from '@/types/types';
+import { getSteamAppId } from '@/composables/steam-quest';
 
 const ILLEGAL_PATH_CHARS = ['>', '<', ':', '"', '|', '?', '*'];
 
@@ -30,7 +31,7 @@ export function isGameQuestCompatible(game: Game): boolean {
  * Returns the compatibility level as a label / status pair for display.
  */
 export function getGameCompatibility(game: Game): {
-  level: 'compatible' | 'rpc-only';
+  level: 'compatible' | 'steam' | 'rpc-only';
   label: string;
   hint: string;
 } {
@@ -39,6 +40,13 @@ export function getGameCompatibility(game: Game): {
       level: 'compatible',
       label: 'Compatible',
       hint: 'Tiene ejecutables Windows válidos. Las quests progresarán normalmente.',
+    };
+  }
+  if (getSteamAppId(game)) {
+    return {
+      level: 'steam',
+      label: 'Steam',
+      hint: 'Discord no publica un ejecutable Win32. Se usará el AppID y la ruta publicados por Steam.',
     };
   }
   return {

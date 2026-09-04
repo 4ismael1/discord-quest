@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, provide, onMounted, onUnmounted } from 'vue';
+import { ref, computed, provide, onMounted, onUnmounted, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { randomString } from '@/utils/random-string';
@@ -7,6 +7,7 @@ import { GameActionsProvider, GameExecutable, type Game } from '@/types/types';
 import { GameActionsKey } from '@/constants/constants';
 import { useFetchGameList, type MirrorMeta } from '@/composables/fetch-gamelist';
 import { useGlobalState } from '@/composables/app-state';
+import { resolveSteamLaunch } from '@/composables/steam-quest';
 import SearchBar from '@/components/SearchBar.vue';
 import GameListPanel from '@/components/GameListPanel.vue';
 import GameDetailsPanel from '@/components/GameDetailsPanel.vue';
@@ -31,6 +32,7 @@ const { addLog } = useGlobalState();
 const gameList = ref<Game[]>([]);
 const selectedGameId = ref<string | null | undefined>(null);
 const currentlyPlaying = ref<string | null>(null);
+const currentlyPlayingMode = ref<'normal' | 'rpc' | 'steam' | null>(null);
 const dialogKey = ref<DialogKey>('none');
 const isDialogOpen = ref(false);
 const isBusy = ref(false); // Prevents double-clicks during start/stop
@@ -40,6 +42,18 @@ const isLoading = computed(() => isLoadingDiscord.value || isLoadingBundled.valu
 
 // ── Persistence ──
 const STORAGE_KEY = 'discordquest_gamelist';
+
+interface SteamCleanupReport {
+  restored_files: number;
+  removed_files: number;
+  warnings: string[];
+}
+
+interface SteamLaunchResult {
+  pid: number;
+  executable_path: string;
+  manifest_path: string;
+}
 
 function saveGameList() {
   try {
@@ -55,6 +69,7 @@ function saveGameList() {
       })),
       aliases: g.aliases,
       themes: g.themes,
+      third_party_skus: g.third_party_skus,
       is_installed: g.is_installed,
     }));
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
@@ -72,6 +87,7 @@ function loadGameList() {
           is_running: false,
           executables: g.executables.map(e => ({ ...e, is_running: false })),
         }));
+        if (enrichSavedSteamSkus(gameDB.value)) saveGameList();
       }
     }
   } catch { /* ignore parse errors */ }
@@ -100,10 +116,20 @@ const fetchStatus = computed(() => {
 let unlistenProcessExited: (() => void) | null = null;
 
 onMounted(async () => {
+  try {
+    const recovery = await invoke<SteamCleanupReport>('recover_steam_session');
+    if (recovery.restored_files > 0 || recovery.removed_files > 0) {
+      addLog('info', `Steam recuperado: ${recovery.restored_files} restaurado(s), ${recovery.removed_files} eliminado(s)`);
+    }
+    recovery.warnings.forEach(warning => addLog('warning', warning));
+  } catch (error) {
+    addLog('warning', `No se pudo revisar la recuperación Steam: ${error}`);
+  }
   loadGameList();
-  unlistenProcessExited = await listen<{ app_id: string; executable_name: string; game_name: string }>('process_exited', (event) => {
-    const { app_id, game_name } = event.payload;
+  unlistenProcessExited = await listen<{ app_id: string; executable_name: string; game_name: string; cleanup_warnings?: string[] }>('process_exited', (event) => {
+    const { app_id, game_name, cleanup_warnings } = event.payload;
     addLog('warning', `Proceso finalizado: ${game_name}`);
+    cleanup_warnings?.forEach(warning => addLog('warning', warning));
     
     // Update game state — mark ALL executables as stopped (only 1 runs at a time)
     const game = gameList.value.find(g => g.id === app_id);
@@ -113,6 +139,7 @@ onMounted(async () => {
     }
     if (currentlyPlaying.value === app_id) {
       currentlyPlaying.value = null;
+      currentlyPlayingMode.value = null;
     }
   });
 });
@@ -188,15 +215,21 @@ async function playGame({ game, executable }: { game: Game; executable: GameExec
         runningGame.executables.forEach(e => e.is_running = false);
         if (runningExe) {
           invoke('stop_process', { exec_name: runningExe.filename || runningExe.name.split(/\\|\//).pop() || '', app_id: runningGame.id }).catch(() => {});
+        } else if (currentlyPlayingMode.value === 'steam') {
+          await invoke('stop_steam_process', { discord_app_id: runningGame.id });
+        } else {
+          invoke('stop_process', { exec_name: RPC_EXE_NAME, app_id: runningGame.id }).catch(() => {});
         }
         addLog('info', `Detenido: ${runningGame.name}`);
       }
       currentlyPlaying.value = null;
+      currentlyPlayingMode.value = null;
     }
 
     // Optimistic: update UI instantly
     addLog('info', `Iniciando: ${game.name}`);
     currentlyPlaying.value = game.id;
+    currentlyPlayingMode.value = 'normal';
     gameToPlay.is_running = true;
     executableItem.is_running = true;
 
@@ -212,6 +245,7 @@ async function playGame({ game, executable }: { game: Game; executable: GameExec
       gameToPlay.is_running = false;
       executableItem.is_running = false;
       currentlyPlaying.value = null;
+      currentlyPlayingMode.value = null;
     });
   }
 }
@@ -224,6 +258,7 @@ function stopPlaying({ game, executable }: { game: Game; executable: GameExecuta
     gameToPlay.is_running = false;
     executableItem.is_running = false;
     currentlyPlaying.value = null;
+    currentlyPlayingMode.value = null;
     addLog('info', `Detenido: ${game.name}`);
 
     // Fire invoke in background
@@ -253,13 +288,20 @@ async function playViaRpc(game: Game) {
         const runningExe = runningGame.executables.find(e => e.is_running);
         runningGame.is_running = false;
         runningGame.executables.forEach(e => e.is_running = false);
-        const exeNameToStop = runningExe?.filename
-          || runningExe?.name.split(/\\|\//).pop()
-          || RPC_EXE_NAME;
-        invoke('stop_process', { exec_name: exeNameToStop, app_id: runningGame.id }).catch(() => {});
+        if (runningExe) {
+          const exeNameToStop = runningExe.filename
+            || runningExe.name.split(/\\|\//).pop()
+            || '';
+          invoke('stop_process', { exec_name: exeNameToStop, app_id: runningGame.id }).catch(() => {});
+        } else if (currentlyPlayingMode.value === 'steam') {
+          await invoke('stop_steam_process', { discord_app_id: runningGame.id });
+        } else {
+          invoke('stop_process', { exec_name: RPC_EXE_NAME, app_id: runningGame.id }).catch(() => {});
+        }
         addLog('info', `Detenido: ${runningGame.name}`);
       }
       currentlyPlaying.value = null;
+      currentlyPlayingMode.value = null;
     }
 
     // Create the fake exe (generic path since the name doesn't matter for RPC)
@@ -272,6 +314,7 @@ async function playViaRpc(game: Game) {
 
     addLog('info', `Iniciando RPC: ${game.name}`);
     currentlyPlaying.value = gameInList.id;
+    currentlyPlayingMode.value = 'rpc';
     gameInList.is_running = true;
 
     invoke('run_background_process', {
@@ -285,6 +328,7 @@ async function playViaRpc(game: Game) {
       addLog('error', `Error al iniciar RPC: ${error}`);
       gameInList.is_running = false;
       currentlyPlaying.value = null;
+      currentlyPlayingMode.value = null;
     });
   } catch (error) {
     addLog('error', `Error RPC: ${error}`);
@@ -299,9 +343,112 @@ function stopRpc(game: Game) {
   gameInList.is_running = false;
   if (currentlyPlaying.value === gameInList.id) {
     currentlyPlaying.value = null;
+    currentlyPlayingMode.value = null;
   }
   addLog('info', `Detenido RPC: ${game.name}`);
   invoke('stop_process', { exec_name: RPC_EXE_NAME, app_id: gameInList.id }).catch(() => {});
+}
+
+// Older saved lists predate Steam SKUs. Enrich them as soon as the current
+// mirror becomes available so users do not need to remove and re-add games.
+function enrichSavedSteamSkus(games: Game[]): boolean {
+  let changed = false;
+  for (const savedGame of gameList.value) {
+    const current = games.find(game => game.id === savedGame.id);
+    if (!current) continue;
+    const nextSkus = current.third_party_skus;
+    if (JSON.stringify(savedGame.third_party_skus ?? []) !== JSON.stringify(nextSkus ?? [])) {
+      savedGame.third_party_skus = nextSkus;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+watch(gameDB, (games) => {
+  if (enrichSavedSteamSkus(games)) saveGameList();
+});
+
+async function playViaSteam(game: Game) {
+  if (isBusy.value) return;
+  isBusy.value = true;
+  try {
+    const gameInList = gameList.value.find(item => item.uid === game.uid);
+    if (!gameInList) return;
+
+    if (currentlyPlaying.value && currentlyPlaying.value !== gameInList.id) {
+      const runningGame = gameList.value.find(item => item.id === currentlyPlaying.value);
+      if (runningGame) {
+        const runningExe = runningGame.executables.find(item => item.is_running);
+        runningGame.is_running = false;
+        runningGame.executables.forEach(item => item.is_running = false);
+        if (runningExe) {
+          invoke('stop_process', {
+            exec_name: runningExe.filename || runningExe.name.split(/\\|\//).pop() || '',
+            app_id: runningGame.id,
+          }).catch(() => {});
+        } else if (currentlyPlayingMode.value === 'steam') {
+          await invoke('stop_steam_process', { discord_app_id: runningGame.id });
+        } else {
+          invoke('stop_process', { exec_name: RPC_EXE_NAME, app_id: runningGame.id }).catch(() => {});
+        }
+        addLog('info', `Detenido: ${runningGame.name}`);
+      }
+      currentlyPlaying.value = null;
+      currentlyPlayingMode.value = null;
+    }
+
+    addLog('info', `Consultando metadatos Steam: ${game.name}`);
+    const profile = await resolveSteamLaunch(gameInList);
+    if (profile.inferredExecutable) {
+      addLog('warning', `Steam no publicó un ejecutable; se usará ${profile.executablePath}`);
+    }
+    addLog('info', `Preparando Steam: ${profile.installDir}/${profile.executablePath}`);
+
+    const result = await invoke<SteamLaunchResult>('run_steam_game', {
+      name: gameInList.name,
+      discord_app_id: gameInList.id,
+      steam_app_id: profile.steamAppId,
+      install_dir: profile.installDir,
+      executable_path: profile.executablePath,
+      depot_id: profile.depotId,
+    });
+
+    gameInList.is_running = true;
+    currentlyPlaying.value = gameInList.id;
+    currentlyPlayingMode.value = 'steam';
+    addLog('info', `Steam iniciado (PID ${result.pid})`);
+  } catch (error) {
+    addLog('error', `Error Steam: ${error}`);
+    const gameInList = gameList.value.find(item => item.uid === game.uid);
+    if (gameInList) gameInList.is_running = false;
+    if (currentlyPlaying.value === game.id) {
+      currentlyPlaying.value = null;
+      currentlyPlayingMode.value = null;
+    }
+  } finally {
+    isBusy.value = false;
+  }
+}
+
+async function stopSteam(game: Game) {
+  if (isBusy.value) return;
+  isBusy.value = true;
+  try {
+    const gameInList = gameList.value.find(item => item.uid === game.uid);
+    if (!gameInList) return;
+    gameInList.is_running = false;
+    if (currentlyPlaying.value === gameInList.id) {
+      currentlyPlaying.value = null;
+      currentlyPlayingMode.value = null;
+    }
+    addLog('info', `Deteniendo Steam: ${game.name}`);
+    await invoke('stop_steam_process', { discord_app_id: gameInList.id });
+  } catch (error) {
+    addLog('error', `Error al detener Steam: ${error}`);
+  } finally {
+    isBusy.value = false;
+  }
 }
 
 async function installAndPlay({ game, executable }: { game: Game; executable: GameExecutable }) {
@@ -418,6 +565,8 @@ provide<GameActionsProvider>(GameActionsKey, {
         @install-and-play="installAndPlay"
         @play-rpc="playViaRpc"
         @stop-rpc="stopRpc"
+        @play-steam="playViaSteam"
+        @stop-steam="stopSteam"
       />
     </div>
 
