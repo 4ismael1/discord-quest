@@ -1,27 +1,21 @@
-# DiscordQuest v1.3.0
-
-Esta versión parte nuevamente de la base estable de v1.1.0 e incorpora el modo Steam de forma aislada.
+# DiscordQuest v1.4.0
 
 ## Novedades
 
-- Nuevo flujo Steam solo para juegos sin ejecutables Win32 publicados por Discord y con AppID de Steam disponible.
-- Creación temporal del runner en `Steam\\steamapps\\common\\<juego>` y de `appmanifest_<appid>.acf` con `StateFlags=1026`.
-- Consulta de la ruta y el ejecutable mediante los metadatos públicos de SteamCMD.
-- Restauración automática de cualquier ejecutable o appmanifest preexistente.
-- Limpieza automática al detener el juego, cerrar el runner o salir de DiscordQuest.
-- Journal de recuperación para completar la limpieza después de un cierre inesperado.
-- Inicio del runner más tolerante en Windows 10 y Windows 11; un fallo de la bandeja ya no impide abrir su ventana.
-- Se conserva sin cambios el flujo normal para los juegos que sí publican una ruta ejecutable válida.
+- Nueva sección **Configuración**.
+- Opción para ejecutar varias quests al mismo tiempo. Está desactivada por defecto para conservar el comportamiento anterior.
+- Política configurable de actualización de la API: al iniciar, diaria, semanal o manual.
+- Botón para actualizar la lista de juegos inmediatamente.
 
-## Requisitos del modo Steam
+## Mejoras
 
-- Steam debe estar instalado y registrado en Windows.
-- No es obligatorio mantener Steam abierto para iniciar el runner.
-- Se necesita conexión al iniciar para consultar los metadatos de SteamCMD.
+- Cada juego Steam utiliza una sesión y un journal independientes, permitiendo varias simulaciones simultáneas sin mezclar su limpieza.
+- La lista almacenada aparece de inmediato y la comprobación remota ya no se duplica al abrir la aplicación.
+- El contador de procesos incluye tanto simulaciones normales como Steam.
+- Al cerrar un proceso solo se detiene y elimina el estado correspondiente a ese juego.
+- La interfaz muestra la versión real instalada en lugar de un valor fijo.
 
-## Correcciones
+## Notas
 
-- Separación entre procesos normales, RPC y Steam para evitar detener el proceso equivocado.
-- Prevención de dobles inicios y de sesiones Steam superpuestas.
-- Validación de rutas para impedir escrituras fuera de `steamapps\\common`.
-- Empaquetado reproducible del runner antes de construir el instalador.
+- Con la ejecución múltiple desactivada, iniciar un juego detiene el anterior como en las versiones previas.
+- Los archivos temporales del modo Steam continúan restaurándose o eliminándose al detener la simulación; los journals pendientes también se recuperan en el siguiente inicio.

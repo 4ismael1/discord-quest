@@ -10,7 +10,8 @@ use tauri::{path::BaseDirectory, Emitter, Manager};
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
 use winreg::RegKey;
 
-const JOURNAL_NAME: &str = "steam-session.json";
+const LEGACY_JOURNAL_NAME: &str = "steam-session.json";
+const JOURNAL_PREFIX: &str = "steam-session-";
 
 #[derive(Clone, Deserialize, Serialize)]
 struct SteamSession {
@@ -175,14 +176,18 @@ fn backup_path(path: &Path, suffix: &str) -> PathBuf {
     path.with_file_name(format!("{}.discordquest-{}", name, suffix))
 }
 
-fn journal_path(handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn journal_directory(handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     let directory = handle
         .path()
         .app_local_data_dir()
         .map_err(|error| format!("No se encontró la carpeta de datos: {}", error))?;
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("No se pudo crear la carpeta de datos: {}", error))?;
-    Ok(directory.join(JOURNAL_NAME))
+    Ok(directory)
+}
+
+fn journal_path(handle: &tauri::AppHandle, discord_app_id: &str) -> Result<PathBuf, String> {
+    Ok(journal_directory(handle)?.join(format!("{}{}.json", JOURNAL_PREFIX, discord_app_id)))
 }
 
 fn write_journal(session: &SteamSession) -> Result<(), String> {
@@ -515,30 +520,45 @@ fn monitor_process(handle: tauri::AppHandle, key: String) {
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn recover_steam_session(handle: tauri::AppHandle) -> SteamCleanupReport {
-    let Ok(path) = journal_path(&handle) else {
+    let Ok(directory) = journal_directory(&handle) else {
         return SteamCleanupReport::default();
     };
-    if !path.is_file() {
+    let Ok(entries) = std::fs::read_dir(directory) else {
         return SteamCleanupReport::default();
-    }
-    match std::fs::read(&path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<SteamSession>(&bytes).ok())
-    {
-        Some(mut session) => {
-            // The recovery file being read is authoritative. Never trust a
-            // serialized path when deciding which journal may be removed.
-            session.journal_path = path;
-            cleanup_session(&session)
+    };
+    let mut total = SteamCleanupReport::default();
+
+    for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let is_session_journal = file_name == LEGACY_JOURNAL_NAME
+            || (file_name.starts_with(JOURNAL_PREFIX) && file_name.ends_with(".json"));
+        if !is_session_journal || !path.is_file() {
+            continue;
         }
-        None => SteamCleanupReport {
-            warnings: vec![format!(
+
+        match std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<SteamSession>(&bytes).ok())
+        {
+            Some(mut session) => {
+                // The recovery file being read is authoritative. Never trust a
+                // serialized path when deciding which journal may be removed.
+                session.journal_path = path;
+                let report = cleanup_session(&session);
+                total.restored_files += report.restored_files;
+                total.removed_files += report.removed_files;
+                total.warnings.extend(report.warnings);
+            }
+            None => total.warnings.push(format!(
                 "No se pudo leer la recuperación Steam: {}",
                 display_path(&path)
-            )],
-            ..Default::default()
-        },
+            )),
+        }
     }
+
+    total
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -556,12 +576,17 @@ pub async fn run_steam_game(
     if let Some(depot_id) = depot_id.as_deref() {
         validate_numeric_id(depot_id, "DepotID de Steam")?;
     }
-    // Hold the registry lock throughout preparation. Besides serializing two
-    // rapid starts, this guarantees that the single recovery journal can only
-    // ever describe one active Steam transaction.
+    // Hold the registry lock throughout preparation to serialize rapid starts.
+    // Each active game has an independent recovery journal.
     let mut processes = registry().lock().unwrap();
-    if !processes.is_empty() {
-        return Err("Ya hay una simulación Steam activa".to_string());
+    if processes.contains_key(&process_key(&discord_app_id)) {
+        return Err("Este juego ya tiene una simulación Steam activa".to_string());
+    }
+    if processes
+        .values()
+        .any(|process| process.session.steam_app_id == steam_app_id)
+    {
+        return Err("Ese AppID de Steam ya tiene una simulación activa".to_string());
     }
 
     let root = steam_root()?;
@@ -613,8 +638,9 @@ pub async fn run_steam_game(
         return Err("La carpeta Steam resuelta sale de steamapps/common".into());
     }
 
-    let recovery_journal = journal_path(&handle)?;
-    if recovery_journal.is_file() {
+    let recovery_directory = journal_directory(&handle)?;
+    let recovery_journal = journal_path(&handle, &discord_app_id)?;
+    if recovery_journal.is_file() || recovery_directory.join(LEGACY_JOURNAL_NAME).is_file() {
         return Err(
             "Hay una limpieza Steam pendiente; reinicia DiscordQuest antes de continuar".into(),
         );
@@ -751,6 +777,22 @@ pub async fn stop_steam_process(
     let report = cleanup_session(&process.session);
     emit_exit(&handle, &process.session, report);
     Ok(())
+}
+
+pub fn active_processes() -> Vec<serde_json::Value> {
+    registry()
+        .lock()
+        .unwrap()
+        .values()
+        .map(|process| {
+            serde_json::json!({
+                "app_id": process.session.discord_app_id,
+                "executable_name": process.session.executable_path.file_name().and_then(|name| name.to_str()).unwrap_or(""),
+                "key": process_key(&process.session.discord_app_id),
+                "mode": "steam",
+            })
+        })
+        .collect()
 }
 
 pub fn shutdown() {
@@ -910,6 +952,55 @@ mod tests {
             b"original manifest"
         );
         assert!(!session.journal_path.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cleanup_keeps_other_steam_sessions_intact() {
+        let root = test_root("multiple");
+        let mut first = test_session(&root, false);
+        first.journal_path = root.join("steam-session-456.json");
+
+        let mut second = test_session(&root, false);
+        second.discord_app_id = "789".into();
+        second.steam_app_id = "321".into();
+        second.game_root = second.common_root.join("Other");
+        second.executable_path = second.game_root.join("Other.exe");
+        second.manifest_path = root.join("steamapps").join("appmanifest_321.acf");
+        second.marker_path = second
+            .executable_path
+            .with_file_name("Other.exe.discordquest-steam");
+        second.journal_path = root.join("steam-session-789.json");
+
+        write_temporary_session(&first, false);
+        std::fs::create_dir_all(second.executable_path.parent().unwrap()).unwrap();
+        std::fs::write(&second.executable_path, b"second runner").unwrap();
+        std::fs::write(&second.manifest_path, b"second manifest").unwrap();
+        std::fs::write(
+            &second.marker_path,
+            b"discord_app_id=789\nsteam_app_id=321\n",
+        )
+        .unwrap();
+        std::fs::write(&second.journal_path, b"second journal").unwrap();
+
+        let first_report = cleanup_session(&first);
+
+        assert!(
+            first_report.warnings.is_empty(),
+            "{:?}",
+            first_report.warnings
+        );
+        assert!(second.executable_path.is_file());
+        assert!(second.manifest_path.is_file());
+        assert!(second.marker_path.is_file());
+        assert!(second.journal_path.is_file());
+
+        let second_report = cleanup_session(&second);
+        assert!(
+            second_report.warnings.is_empty(),
+            "{:?}",
+            second_report.warnings
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

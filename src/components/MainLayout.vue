@@ -5,12 +5,14 @@ import TitleBar from './TitleBar.vue';
 import { ref, onMounted, onUnmounted } from 'vue';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 
 const appState = useGlobalState();
 const { page, setPage } = appState;
 const { mirrorMeta } = useFetchGameList();
 
 const activeProcessCount = ref(0);
+const appVersion = ref('');
 
 function formatMetaDate(iso: string): string {
   try {
@@ -35,6 +37,7 @@ async function refreshProcessCount() {
 }
 
 onMounted(async () => {
+  appVersion.value = await getVersion().catch(() => '');
   refreshProcessCount();
   pollInterval = setInterval(refreshProcessCount, 3000);
   unlistenProcessExited = await listen('process_exited', () => {
@@ -58,6 +61,7 @@ onUnmounted(() => {
         v-for="tab in [
           { key: Pages.HOME, label: 'Inicio', icon: '⌂' },
           { key: Pages.PLAYGROUND, label: 'Registros', icon: '⚡' },
+          { key: Pages.SETTINGS, label: 'Configuración', icon: '⚙' },
         ]"
         :key="tab.key"
         class="nav-tab"
@@ -90,7 +94,7 @@ onUnmounted(() => {
         </template>
       </div>
       <div class="status-bar-right">
-        <span>DiscordQuest v1.0.0</span>
+        <span>DiscordQuest{{ appVersion ? ` v${appVersion}` : '' }}</span>
       </div>
     </div>
   </div>

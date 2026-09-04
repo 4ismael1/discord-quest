@@ -25,6 +25,7 @@
 - Terminacion graceful de procesos
 - Modo Steam automatico para juegos sin ejecutable Win32 publicado por Discord
 - Limpieza y restauracion automatica de los archivos temporales del modo Steam
+- Modo opcional para ejecutar varias quests simultaneamente
 
 ## Como funciona
 
@@ -53,6 +54,12 @@ Si Discord no publica un ejecutable Win32 pero si un AppID de Steam, DiscordQues
 Antes de reemplazar un archivo existente crea un respaldo. Al detener el proceso, cerrar su ventana o salir de DiscordQuest, restaura los originales y elimina el runner, el manifiesto, el marcador y los respaldos temporales. Un journal local permite terminar esa limpieza en el siguiente inicio si hubo un cierre inesperado.
 
 Steam debe estar instalado y registrado en Windows. El cliente de Steam no necesita permanecer abierto, pero se requiere conexion al iniciar para consultar SteamCMD. Este modo solo se ofrece a juegos que no pueden usar el flujo normal.
+
+### Configuracion
+
+El apartado **Configuracion** permite activar la ejecucion simultanea de varias quests. La opcion esta desactivada por defecto; cuando permanece apagada, iniciar un juego detiene los demas como en versiones anteriores.
+
+La lista de juegos usa IndexedDB y se muestra desde la cache local. Por defecto solo se consulta el pequeno `meta.json` una vez al dia y la lista completa se descarga si cambia su SHA. Tambien puedes elegir comprobacion en cada inicio, semanal o exclusivamente manual.
 
 ---
 

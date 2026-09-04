@@ -198,7 +198,7 @@ async fn stop_process(exec_name: String, app_id: Option<String>) -> Result<(), S
 #[tauri::command(rename_all = "snake_case")]
 fn get_active_processes() -> Vec<serde_json::Value> {
     let registry = get_process_registry().lock().unwrap();
-    registry
+    let mut processes: Vec<_> = registry
         .keys()
         .map(|key| {
             let parts: Vec<&str> = key.splitn(2, ':').collect();
@@ -208,7 +208,10 @@ fn get_active_processes() -> Vec<serde_json::Value> {
                 "key": key,
             })
         })
-        .collect()
+        .collect();
+    drop(registry);
+    processes.extend(steam::active_processes());
+    processes
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

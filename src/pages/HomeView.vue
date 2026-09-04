@@ -8,6 +8,7 @@ import { GameActionsKey } from '@/constants/constants';
 import { useFetchGameList, type MirrorMeta } from '@/composables/fetch-gamelist';
 import { useGlobalState } from '@/composables/app-state';
 import { resolveSteamLaunch } from '@/composables/steam-quest';
+import { useAppSettings } from '@/composables/app-settings';
 import SearchBar from '@/components/SearchBar.vue';
 import GameListPanel from '@/components/GameListPanel.vue';
 import GameDetailsPanel from '@/components/GameDetailsPanel.vue';
@@ -27,12 +28,14 @@ const {
 } = useFetchGameList();
 
 const { addLog } = useGlobalState();
+const { multiQuestEnabled } = useAppSettings();
+
+type RunnerMode = 'normal' | 'rpc' | 'steam';
 
 // State
 const gameList = ref<Game[]>([]);
 const selectedGameId = ref<string | null | undefined>(null);
-const currentlyPlaying = ref<string | null>(null);
-const currentlyPlayingMode = ref<'normal' | 'rpc' | 'steam' | null>(null);
+const activeModes = ref<Record<string, RunnerMode>>({});
 const dialogKey = ref<DialogKey>('none');
 const isDialogOpen = ref(false);
 const isBusy = ref(false); // Prevents double-clicks during start/stop
@@ -98,10 +101,23 @@ const selectedGame = computed(() => {
   return gameList.value.find(g => g.uid === selectedGameId.value) || null;
 });
 
+const currentlyPlaying = computed(() => Object.keys(activeModes.value)[0] ?? null);
 const currentlyPlayingName = computed(() => {
-  if (!currentlyPlaying.value) return '';
-  return gameList.value.find(g => g.id === currentlyPlaying.value)?.name || '';
+  const names = gameList.value
+    .filter(game => activeModes.value[game.id])
+    .map(game => game.name);
+  return names.length > 2 ? `${names.length} quests activas` : names.join(' · ');
 });
+
+function markActive(appId: string, mode: RunnerMode) {
+  activeModes.value = { ...activeModes.value, [appId]: mode };
+}
+
+function markStopped(appId: string) {
+  const next = { ...activeModes.value };
+  delete next[appId];
+  activeModes.value = next;
+}
 
 // Fetch status summary
 const fetchStatus = computed(() => {
@@ -131,16 +147,13 @@ onMounted(async () => {
     addLog('warning', `Proceso finalizado: ${game_name}`);
     cleanup_warnings?.forEach(warning => addLog('warning', warning));
     
-    // Update game state — mark ALL executables as stopped (only 1 runs at a time)
+    // Update only the process that exited; other quests may still be active.
     const game = gameList.value.find(g => g.id === app_id);
     if (game) {
       game.is_running = false;
       game.executables.forEach(e => e.is_running = false);
     }
-    if (currentlyPlaying.value === app_id) {
-      currentlyPlaying.value = null;
-      currentlyPlayingMode.value = null;
-    }
+    markStopped(app_id);
   });
 });
 
@@ -201,68 +214,74 @@ async function createDummyGame(game: Game, executable: GameExecutable) {
   return false;
 }
 
+async function stopActiveGame(game: Game) {
+  const mode = activeModes.value[game.id];
+  if (!mode) return;
+  const runningExe = game.executables.find(executable => executable.is_running);
+
+  if (mode === 'steam') {
+    await invoke('stop_steam_process', { discord_app_id: game.id });
+  } else {
+    const executableName = mode === 'rpc'
+      ? RPC_EXE_NAME
+      : runningExe?.filename || runningExe?.name.split(/\\|\//).pop() || '';
+    if (executableName) {
+      await invoke('stop_process', { exec_name: executableName, app_id: game.id });
+    }
+  }
+
+  game.is_running = false;
+  game.executables.forEach(executable => executable.is_running = false);
+  markStopped(game.id);
+  addLog('info', `Detenido: ${game.name}`);
+}
+
+async function stopOtherGames(nextAppId: string) {
+  if (multiQuestEnabled.value) return;
+  const activeGames = gameList.value.filter(game => game.id !== nextAppId && activeModes.value[game.id]);
+  for (const activeGame of activeGames) {
+    await stopActiveGame(activeGame);
+  }
+}
+
 async function playGame({ game, executable }: { game: Game; executable: GameExecutable }) {
   if (isBusy.value) return;
-  const gameToPlay = gameList.value.find(g => g.uid === game.uid);
-  const executableItem = gameToPlay?.executables.find(e => e.name === executable.name);
-  if (gameToPlay && executableItem) {
-    // Stop any currently running game first (one at a time)
-    if (currentlyPlaying.value && currentlyPlaying.value !== game.id) {
-      const runningGame = gameList.value.find(g => g.id === currentlyPlaying.value);
-      if (runningGame) {
-        const runningExe = runningGame.executables.find(e => e.is_running);
-        runningGame.is_running = false;
-        runningGame.executables.forEach(e => e.is_running = false);
-        if (runningExe) {
-          invoke('stop_process', { exec_name: runningExe.filename || runningExe.name.split(/\\|\//).pop() || '', app_id: runningGame.id }).catch(() => {});
-        } else if (currentlyPlayingMode.value === 'steam') {
-          await invoke('stop_steam_process', { discord_app_id: runningGame.id });
-        } else {
-          invoke('stop_process', { exec_name: RPC_EXE_NAME, app_id: runningGame.id }).catch(() => {});
-        }
-        addLog('info', `Detenido: ${runningGame.name}`);
-      }
-      currentlyPlaying.value = null;
-      currentlyPlayingMode.value = null;
-    }
+  isBusy.value = true;
+  try {
+    const gameToPlay = gameList.value.find(g => g.uid === game.uid);
+    const executableItem = gameToPlay?.executables.find(e => e.name === executable.name);
+    if (!gameToPlay || !executableItem || gameToPlay.is_running) return;
 
-    // Optimistic: update UI instantly
+    await stopOtherGames(gameToPlay.id);
     addLog('info', `Iniciando: ${game.name}`);
-    currentlyPlaying.value = game.id;
-    currentlyPlayingMode.value = 'normal';
-    gameToPlay.is_running = true;
-    executableItem.is_running = true;
-
-    // Fire invoke in background — rollback on error
-    invoke('run_background_process', {
+    await invoke('run_background_process', {
       name: game.name,
       path: executable.path,
       executable_name: executable.filename,
       path_len: executable.segments,
       app_id: gameToPlay.id,
-    }).catch((error) => {
-      addLog('error', `Error al iniciar: ${error}`);
-      gameToPlay.is_running = false;
-      executableItem.is_running = false;
-      currentlyPlaying.value = null;
-      currentlyPlayingMode.value = null;
     });
+
+    Object.assign(executableItem, {
+      path: executable.path,
+      filename: executable.filename,
+      segments: executable.segments,
+      is_running: true,
+    });
+    gameToPlay.is_running = true;
+    markActive(gameToPlay.id, 'normal');
+  } catch (error) {
+    addLog('error', `Error al iniciar: ${error}`);
+  } finally {
+    isBusy.value = false;
   }
 }
 
-function stopPlaying({ game, executable }: { game: Game; executable: GameExecutable }) {
+async function stopPlaying({ game, executable }: { game: Game; executable: GameExecutable }) {
   const gameToPlay = gameList.value.find(g => g.uid === game.uid);
   const executableItem = gameToPlay?.executables.find(e => e.name === executable.name);
   if (gameToPlay && executableItem) {
-    // Optimistic: update UI instantly
-    gameToPlay.is_running = false;
-    executableItem.is_running = false;
-    currentlyPlaying.value = null;
-    currentlyPlayingMode.value = null;
-    addLog('info', `Detenido: ${game.name}`);
-
-    // Fire invoke in background
-    invoke('stop_process', { exec_name: executable.filename!, app_id: gameToPlay.id }).catch(() => {});
+    await stopActiveGame(gameToPlay);
   }
 }
 
@@ -279,30 +298,8 @@ async function playViaRpc(game: Game) {
   isBusy.value = true;
   try {
     const gameInList = gameList.value.find(g => g.uid === game.uid);
-    if (!gameInList) return;
-
-    // Stop any other running game first
-    if (currentlyPlaying.value && currentlyPlaying.value !== gameInList.id) {
-      const runningGame = gameList.value.find(g => g.id === currentlyPlaying.value);
-      if (runningGame) {
-        const runningExe = runningGame.executables.find(e => e.is_running);
-        runningGame.is_running = false;
-        runningGame.executables.forEach(e => e.is_running = false);
-        if (runningExe) {
-          const exeNameToStop = runningExe.filename
-            || runningExe.name.split(/\\|\//).pop()
-            || '';
-          invoke('stop_process', { exec_name: exeNameToStop, app_id: runningGame.id }).catch(() => {});
-        } else if (currentlyPlayingMode.value === 'steam') {
-          await invoke('stop_steam_process', { discord_app_id: runningGame.id });
-        } else {
-          invoke('stop_process', { exec_name: RPC_EXE_NAME, app_id: runningGame.id }).catch(() => {});
-        }
-        addLog('info', `Detenido: ${runningGame.name}`);
-      }
-      currentlyPlaying.value = null;
-      currentlyPlayingMode.value = null;
-    }
+    if (!gameInList || gameInList.is_running) return;
+    await stopOtherGames(gameInList.id);
 
     // Create the fake exe (generic path since the name doesn't matter for RPC)
     await invoke('create_fake_game', {
@@ -313,23 +310,16 @@ async function playViaRpc(game: Game) {
     });
 
     addLog('info', `Iniciando RPC: ${game.name}`);
-    currentlyPlaying.value = gameInList.id;
-    currentlyPlayingMode.value = 'rpc';
-    gameInList.is_running = true;
-
-    invoke('run_background_process', {
+    await invoke('run_background_process', {
       name: game.name,
       path: RPC_EXE_PATH,
       executable_name: RPC_EXE_NAME,
       path_len: 2,
       app_id: gameInList.id,
       rpc_mode: true,
-    }).catch((error) => {
-      addLog('error', `Error al iniciar RPC: ${error}`);
-      gameInList.is_running = false;
-      currentlyPlaying.value = null;
-      currentlyPlayingMode.value = null;
     });
+    gameInList.is_running = true;
+    markActive(gameInList.id, 'rpc');
   } catch (error) {
     addLog('error', `Error RPC: ${error}`);
   } finally {
@@ -337,16 +327,10 @@ async function playViaRpc(game: Game) {
   }
 }
 
-function stopRpc(game: Game) {
+async function stopRpc(game: Game) {
   const gameInList = gameList.value.find(g => g.uid === game.uid);
   if (!gameInList) return;
-  gameInList.is_running = false;
-  if (currentlyPlaying.value === gameInList.id) {
-    currentlyPlaying.value = null;
-    currentlyPlayingMode.value = null;
-  }
-  addLog('info', `Detenido RPC: ${game.name}`);
-  invoke('stop_process', { exec_name: RPC_EXE_NAME, app_id: gameInList.id }).catch(() => {});
+  await stopActiveGame(gameInList);
 }
 
 // Older saved lists predate Steam SKUs. Enrich them as soon as the current
@@ -374,29 +358,8 @@ async function playViaSteam(game: Game) {
   isBusy.value = true;
   try {
     const gameInList = gameList.value.find(item => item.uid === game.uid);
-    if (!gameInList) return;
-
-    if (currentlyPlaying.value && currentlyPlaying.value !== gameInList.id) {
-      const runningGame = gameList.value.find(item => item.id === currentlyPlaying.value);
-      if (runningGame) {
-        const runningExe = runningGame.executables.find(item => item.is_running);
-        runningGame.is_running = false;
-        runningGame.executables.forEach(item => item.is_running = false);
-        if (runningExe) {
-          invoke('stop_process', {
-            exec_name: runningExe.filename || runningExe.name.split(/\\|\//).pop() || '',
-            app_id: runningGame.id,
-          }).catch(() => {});
-        } else if (currentlyPlayingMode.value === 'steam') {
-          await invoke('stop_steam_process', { discord_app_id: runningGame.id });
-        } else {
-          invoke('stop_process', { exec_name: RPC_EXE_NAME, app_id: runningGame.id }).catch(() => {});
-        }
-        addLog('info', `Detenido: ${runningGame.name}`);
-      }
-      currentlyPlaying.value = null;
-      currentlyPlayingMode.value = null;
-    }
+    if (!gameInList || gameInList.is_running) return;
+    await stopOtherGames(gameInList.id);
 
     addLog('info', `Consultando metadatos Steam: ${game.name}`);
     const profile = await resolveSteamLaunch(gameInList);
@@ -415,17 +378,13 @@ async function playViaSteam(game: Game) {
     });
 
     gameInList.is_running = true;
-    currentlyPlaying.value = gameInList.id;
-    currentlyPlayingMode.value = 'steam';
+    markActive(gameInList.id, 'steam');
     addLog('info', `Steam iniciado (PID ${result.pid})`);
   } catch (error) {
     addLog('error', `Error Steam: ${error}`);
     const gameInList = gameList.value.find(item => item.uid === game.uid);
     if (gameInList) gameInList.is_running = false;
-    if (currentlyPlaying.value === game.id) {
-      currentlyPlaying.value = null;
-      currentlyPlayingMode.value = null;
-    }
+    markStopped(game.id);
   } finally {
     isBusy.value = false;
   }
@@ -437,13 +396,8 @@ async function stopSteam(game: Game) {
   try {
     const gameInList = gameList.value.find(item => item.uid === game.uid);
     if (!gameInList) return;
-    gameInList.is_running = false;
-    if (currentlyPlaying.value === gameInList.id) {
-      currentlyPlaying.value = null;
-      currentlyPlayingMode.value = null;
-    }
     addLog('info', `Deteniendo Steam: ${game.name}`);
-    await invoke('stop_steam_process', { discord_app_id: gameInList.id });
+    await stopActiveGame(gameInList);
   } catch (error) {
     addLog('error', `Error al detener Steam: ${error}`);
   } finally {
